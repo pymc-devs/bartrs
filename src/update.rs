@@ -14,6 +14,6 @@ pub struct TreeProposal {
     pub node_idx: usize,
     pub split_var: u32,
     pub split_val: f64,
-    pub left_value: f64,
-    pub right_value: f64,
+    pub left_value: Vec<f64>,
+    pub right_value: Vec<f64>,
 }

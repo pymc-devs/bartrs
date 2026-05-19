@@ -14,6 +14,7 @@ pub mod tree;
 pub mod update;
 pub mod weight;
 
+use crate::tree::TreeArrays;
 use crate::config::BartConfig;
 use crate::data::OwnedData;
 use crate::kernel::{BartKernel, ErasedKernel, SamplingAlgorithm};
@@ -22,8 +23,8 @@ use crate::splitting::{ContinuousSplit, SplitRules};
 use crate::weight::PyMCWeightFn;
 
 use numpy::{
-    PyArray1, PyReadonlyArray,
-    ndarray::{Array1, Ix1, Ix2},
+    PyReadonlyArray, PyReadonlyArrayDyn, PyArray2, PyUntypedArrayMethods,
+    ndarray::{Array1, Array2, Ix2},
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -42,6 +43,7 @@ pub struct PyBartSettings {
     alpha: f64,
     beta: f64,
     sigma: f64,
+    n_outputs: usize,
     split_prior: Vec<f64>,
     split_rules: Vec<String>,
     response_rule: String,
@@ -61,13 +63,14 @@ impl PyBartSettings {
         alpha,
         beta,
         sigma,
+        n_outputs,
         split_prior,
         split_rules,
         response_rule,
         resampling_rule,
         batch_tune = 0.1,
         batch_post = 0.1,
-        seed = 0
+        seed = 0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -77,6 +80,7 @@ impl PyBartSettings {
         alpha: f64,
         beta: f64,
         sigma: f64,
+        n_outputs: usize,
         split_prior: Vec<f64>,
         split_rules: Vec<String>,
         response_rule: String,
@@ -92,6 +96,7 @@ impl PyBartSettings {
             alpha,
             beta,
             sigma,
+            n_outputs,
             split_prior,
             split_rules,
             response_rule,
@@ -115,12 +120,26 @@ impl PySampler {
     #[staticmethod]
     fn init(
         x: PyReadonlyArray<f64, Ix2>,
-        y: PyReadonlyArray<f64, Ix1>,
+        y: PyReadonlyArrayDyn<f64>,
         model: usize,
         settings: PyBartSettings,
     ) -> PyResult<PySampler> {
         let x_data = x.as_array().to_owned();
-        let y_data = y.as_array().to_owned();
+        // Accept either 1D or 2D `y`. If 1D, reshape to (1, n_samples).
+        let y_array = match y.ndim() {
+            1 => {
+                let a = y.as_array();
+                let n = a.len();
+                let mut out = Array2::zeros((1, n));
+                for i in 0..n {
+                    out[[0, i]] = a[i];
+                }
+                out
+            }
+            2 => y.as_array().to_owned().into_dimensionality::<Ix2>().unwrap(),
+            _ => return Err(PyValueError::new_err("y must be 1D or 2D array")),
+        };
+        let y_data = y_array;
 
         let logp_func: LogpFunc = unsafe { std::mem::transmute(model as *const ()) };
         let weight_fn = unsafe { PyMCWeightFn::from_raw(logp_func) };
@@ -149,7 +168,8 @@ impl PySampler {
             alpha: settings.alpha,
             beta: settings.beta,
             sigma: settings.sigma,
-            min_samples_leaf: 2,
+            n_outputs: settings.n_outputs,
+            min_samples_leaf: 5, // try out min_samples_leaf=5
             splitting_probs: if settings.split_prior.is_empty() {
                 None
             } else {
@@ -184,7 +204,8 @@ impl PySampler {
         &mut self,
         py: Python<'py>,
         tune: Option<bool>,
-    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<TreeArrays>, Vec<u32>)> {
+
         let mut state = self
             .state
             .take()
@@ -194,11 +215,20 @@ impl PySampler {
             state.tune = t;
         }
 
-        let (new_state, _info) = self.kernel.step(&mut self.rng, state);
+        let (mut new_state, _info) = self.kernel.step(&mut self.rng, state);
 
-        let result = PyArray1::from_slice(py, new_state.predictions.as_slice().unwrap());
+        // Need to return TreeArrays
+        let trees = std::mem::take(&mut new_state.forest);
+        new_state.forest = trees.clone();
+
+        // Return predictions as a 2-D array with shape (n_outputs, n_samples)
+        let result = numpy::PyArray2::from_owned_array(py, new_state.predictions.clone());
+
         self.state = Some(new_state);
-        Ok(result)
+
+        let variable_inclusion = self.state.as_ref().unwrap().get_variable_inclusion();
+
+        Ok((result, trees, variable_inclusion))
     }
 }
 
@@ -206,5 +236,6 @@ impl PySampler {
 fn pymc_bart(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBartSettings>()?;
     m.add_class::<PySampler>()?;
+    m.add_class::<TreeArrays>()?;
     Ok(())
 }

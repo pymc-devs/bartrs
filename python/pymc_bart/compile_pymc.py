@@ -108,6 +108,7 @@ class CompiledPyMCModel:
         self.logp_args = self._make_persistent_arrays()
         # Generate the final C-callback Numba function
         self.logp = self._generate_logp_function()
+        self.logp_address = self._get_function_address(self.logp)
 
     def get_function_pointer(self):
         """Get the memory address of the compiled C function.
@@ -118,7 +119,16 @@ class CompiledPyMCModel:
             Memory address of the compiled function that can be passed
             to external libraries (e.g., Rust via FFI)
         """
-        return self.logp.address
+        return self.logp_address
+
+    @staticmethod
+    def _get_function_address(func):
+        """Return the raw address for a numba cfunc or ctypes callback."""
+        address = getattr(func, "address", None)
+        if address is not None:
+            return address
+
+        return ctypes.cast(func, ctypes.c_void_p).value
 
     def _make_functions(self, model, vars):
         """Compile PyTensor functions from the PyMC model.
@@ -302,6 +312,30 @@ class CompiledPyMCModel:
             types.CPointer(types.float64),
             types.intc,
         )
-        logp = cfunc(sig)(logp)
+        try:
+            return cfunc(sig)(logp)
+        except Exception as exc:
+            warnings.warn(
+                f"Falling back to a ctypes logp callback because Numba cfunc compilation failed: {exc}",
+                RuntimeWarning,
+            )
+            return self._generate_ctypes_logp_function(logp_fn, shared_arrays)
 
-        return logp
+    def _generate_ctypes_logp_function(self, logp_fn, shared_arrays):
+        """Fallback log-probability callback implemented with ctypes."""
+
+        callback_type = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int)
+
+        def _logp(ptr, size):
+            data = np.ctypeslib.as_array(ptr, shape=(size,))
+
+            args = []
+            for array in shared_arrays:
+                args.append(array)
+
+            result = logp_fn(data, *args)
+            return float(np.asarray(result).reshape(-1)[0])
+
+        callback = callback_type(_logp)
+        self._ctypes_logp_callback = callback
+        return callback

@@ -1,19 +1,19 @@
-use numpy::ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+use numpy::ndarray::{Array2, ArrayView2};
 
 /// Zero-copy view into training data.
 pub struct DataView<'a> {
     pub x: ArrayView2<'a, f64>,
-    pub y: ArrayView1<'a, f64>,
+    pub y: ArrayView2<'a, f64>,
 }
 
 impl<'a> DataView<'a> {
-    pub fn new(x: ArrayView2<'a, f64>, y: ArrayView1<'a, f64>) -> Self {
+    pub fn new(x: ArrayView2<'a, f64>, y: ArrayView2<'a, f64>) -> Self {
         debug_assert_eq!(
             x.nrows(),
-            y.len(),
-            "X rows ({}) must match Y length ({})",
+            y.ncols(),
+            "X rows ({}) must match Y columns ({}).",
             x.nrows(),
-            y.len()
+            y.ncols()
         );
         Self { x, y }
     }
@@ -25,18 +25,22 @@ impl<'a> DataView<'a> {
     pub fn n_features(&self) -> usize {
         self.x.ncols()
     }
+
+    pub fn n_outputs(&self) -> usize {
+        self.y.nrows()
+    }
 }
 
 /// Owned data for storing in long-lived structs (e.g. Python bindings).
 #[derive(Clone, Debug)]
 pub struct OwnedData {
     pub x: Array2<f64>,
-    pub y: Array1<f64>,
+    pub y: Array2<f64>,
 }
 
 impl OwnedData {
-    pub fn new(x: Array2<f64>, y: Array1<f64>) -> Self {
-        debug_assert_eq!(x.nrows(), y.len());
+    pub fn new(x: Array2<f64>, y: Array2<f64>) -> Self {
+        debug_assert_eq!(x.nrows(), y.ncols());
         Self { x, y }
     }
 
@@ -50,5 +54,9 @@ impl OwnedData {
 
     pub fn n_features(&self) -> usize {
         self.x.ncols()
+    }
+
+    pub fn n_outputs(&self) -> usize {
+        self.y.nrows()
     }
 }

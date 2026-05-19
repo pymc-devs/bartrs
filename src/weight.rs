@@ -1,10 +1,8 @@
 use std::ffi::c_double;
 
-use numpy::ndarray::{Array, Ix1};
-
 /// Safe trait for computing log-weights from predictions.
 pub trait WeightFn {
-    fn log_weight(&self, predictions: &Array<f64, Ix1>) -> f64;
+    fn log_weight(&self, predictions: &[f64]) -> f64;
 }
 
 /// Weight function backed by a C function pointer from PyMC.
@@ -27,7 +25,7 @@ impl PyMCWeightFn {
 }
 
 impl WeightFn for PyMCWeightFn {
-    fn log_weight(&self, predictions: &Array<f64, Ix1>) -> f64 {
+    fn log_weight(&self, predictions: &[f64]) -> f64 {
         unsafe { (self.func_ptr)(predictions.as_ptr(), predictions.len()) }
     }
 }

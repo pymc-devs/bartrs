@@ -15,6 +15,8 @@ pub struct BartConfig {
     pub batch_tune: f64,
     /// Fraction of trees updated per `step()` after tuning.
     pub batch_post: f64,
+    /// Number of outputs for multi-output targets.
+    pub n_outputs: usize,
 }
 
 impl Default for BartConfig {
@@ -30,6 +32,7 @@ impl Default for BartConfig {
             splitting_probs: None,
             batch_tune: 0.1,
             batch_post: 0.1,
+            n_outputs: 1,
         }
     }
 }

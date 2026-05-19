@@ -15,7 +15,7 @@
 #   limitations under the License.
 
 import warnings
-from multiprocessing import Manager
+from multiprocessing import Manager, current_process
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -57,19 +57,19 @@ class BARTRV(RandomVariable):
         else:
             Y = cls.Y
 
-        if not cls.all_trees:
+        stacked_trees = cls.all_trees
+
+        if len(stacked_trees) == 0:
             if size is not None:
                 return np.full((size[0], Y.shape[0]), Y.mean())
             else:
                 return np.full(Y.shape[0], Y.mean())
         else:
+            predictions = _sample_posterior(stacked_trees, cls.X, rng=rng, size=size, shape=1)
             if size is not None:
-                shape = size[0]
-            else:
-                shape = 1
-            raise NotImplementedError("_sample_posterior not implemented")
-            # return _sample_posterior(cls.all_trees, cls.X, rng=rng, shape=shape).squeeze().T
-
+                return predictions[..., 0]
+            return predictions[0, :, 0]
+        
 
 bart = BARTRV()
 
@@ -147,6 +147,8 @@ class BART(Distribution):
                 "The 'linear' option is experimental and not well tested. Use with caution."
             )
 
+
+
         if isinstance(split_rules, dict):
             required_dims =  set(range(X.shape[-1]))
             passed_dims = set(split_rules.keys())
@@ -166,7 +168,17 @@ class BART(Distribution):
         elif isinstance(split_rules, type(None)):
             # Build the default split rules
             default_split_rule = "ContinuousSplit"
-            split_rules = {dim: default_split_rule for dim in range(X.shape[-1])}
+            if hasattr(X, 'shape'):
+                n_features = X.shape[-1]
+                if not isinstance(n_features, (int, np.integer)):
+                    X_temp, _ = preprocess_xy(X, Y)
+                    n_features = X_temp.shape[-1]
+            else:
+                X_temp, _ = preprocess_xy(X, Y)
+                n_features = X_temp.shape[-1]
+
+            split_rules = {dim: default_split_rule for dim in range(n_features)}
+
 
         manager = Manager()
         cls.all_trees = manager.list()
@@ -230,6 +242,19 @@ class BART(Distribution):
 
 
 def preprocess_xy(X, Y) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    # Handle PyTensor variables (from pm.Data, etc.)
+    if isinstance(X, pt.TensorVariable):
+        if hasattr(X, 'eval'):
+            X = X.eval()
+        elif hasattr(X, 'get_value'):
+            X = X.get_value()
+    
+    if isinstance(Y, pt.TensorVariable):
+        if hasattr(Y, 'eval'):
+            Y = Y.eval()
+        elif hasattr(Y, 'get_value'):
+            Y = Y.get_value()
+    
     if isinstance(Y, (Series, DataFrame)):
         Y = Y.to_numpy()
     if isinstance(X, (Series, DataFrame)):

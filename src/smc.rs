@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use numpy::ndarray::{Array, ArrayView1, Ix1};
+use numpy::ndarray::{Array, ArrayView1, Ix2};
 use rand::Rng;
 use rand::distr::weighted::WeightedIndex;
 use rand_distr::{Distribution, Normal};
 
 use crate::config::BartConfig;
 use crate::data::DataView;
-use crate::particle::Particle;
+use crate::particle::{Particle};
 use crate::resampling::ResamplingStrategy;
 use crate::splitting::SplitRules;
 use crate::tree::TreeArrays;
@@ -25,12 +25,13 @@ pub struct SmcStepInfo {
 /// Run one SMC step to produce a new tree.
 pub fn smc_step<R, W>(
     rng: &mut impl Rng,
-    residuals: &Array<f64, Ix1>,
+    sum_trees: &Array<f64, Ix2>,
     config: &BartConfig,
     data: &DataView,
     split_rules: &[SplitRules],
     resampling: &R,
     weight_fn: &W,
+    current_tree: TreeArrays,
 ) -> (TreeArrays, SmcStepInfo)
 where
     R: ResamplingStrategy,
@@ -42,9 +43,12 @@ where
     let mut particles: Vec<Particle> = (0..config.n_particles)
         .map(|i| {
             if i == 0 {
-                Particle::new_reference(init_leaf_value, n_samples, config.max_depth)
+                // Particle::new_reference(init_leaf_value, n_samples, config.max_depth, config.n_outputs)
+
+                Particle::from_reference(current_tree.clone(), n_samples, current_tree.max_depth)
+
             } else {
-                Particle::new(init_leaf_value, n_samples, config.max_depth)
+                Particle::new(init_leaf_value, n_samples, config.max_depth, config.n_outputs)
             }
         })
         .collect();
@@ -53,7 +57,14 @@ where
     let mut inner_weights = vec![0.0f64; n_non_ref];
     let mut acceptance_count = 0;
 
-    let mut predictions_buf = Array::zeros(n_samples);
+
+    let mut sum_trees_noi = Array::zeros((config.n_outputs, n_samples));
+    let mut current_tree_pred = Array::zeros((config.n_outputs, n_samples));
+    current_tree.predict_training_into_multi(&mut current_tree_pred);
+    sum_trees_noi.assign(sum_trees);
+    sum_trees_noi -= &current_tree_pred;
+
+    let mut predictions_buf = Array::zeros((config.n_outputs, n_samples));
     let mut ancestors_buf: Vec<usize> = Vec::with_capacity(n_non_ref);
     let mut scratch_particles: Vec<Particle> = Vec::with_capacity(n_non_ref);
     let mut mutated = vec![false; n_non_ref];
@@ -68,7 +79,7 @@ where
                     rng,
                     particle,
                     node_idx,
-                    residuals,
+                    sum_trees,
                     config,
                     data,
                     split_rules,
@@ -88,9 +99,11 @@ where
 
         for (i, particle) in particles[1..].iter().enumerate() {
             if mutated[i] {
-                particle.tree.predict_training_into(&mut predictions_buf);
-                predictions_buf += residuals;
-                inner_weights[i] = weight_fn.log_weight(&predictions_buf);
+                        predictions_buf.fill(0.0);
+                        particle.tree.predict_training_into_multi(&mut predictions_buf);
+                        predictions_buf += &sum_trees_noi;
+                    let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+                    inner_weights[i] = weight_fn.log_weight(&flat);
             }
         }
         normalize_weights_inplace(&mut inner_weights);
@@ -102,16 +115,24 @@ where
         particles.append(&mut scratch_particles);
     }
 
-    let mut weights = vec![0.0f64; config.n_particles];
+    let mut log_weights = vec![0.0f64; config.n_particles];
     for (i, particle) in particles.iter().enumerate() {
-        particle.tree.predict_training_into(&mut predictions_buf);
-        predictions_buf += residuals;
-        weights[i] = weight_fn.log_weight(&predictions_buf);
+        predictions_buf.fill(0.0);
+        particle.tree.predict_training_into_multi(&mut predictions_buf);
+        predictions_buf += &sum_trees_noi;
+        let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+        log_weights[i] = weight_fn.log_weight(&flat);
     }
+
+    let mut weights = log_weights.clone();
+
+
     normalize_weights_inplace(&mut weights);
 
     let dist = WeightedIndex::new(&weights).unwrap();
     let selected_idx = dist.sample(rng);
+
+    let selected_log_like = log_weights[selected_idx];
 
     let selected_particle = particles.swap_remove(selected_idx);
     // Drop remaining particles now so their Arc refs are released before try_unwrap.
@@ -122,7 +143,7 @@ where
     };
 
     let info = SmcStepInfo {
-        log_likelihood: weights[0],
+        log_likelihood: selected_log_like,
         acceptance_count,
     };
 
@@ -134,17 +155,27 @@ fn propose_mutation(
     rng: &mut impl Rng,
     particle: &Particle,
     node_idx: usize,
-    ensemble_predictions: &Array<f64, Ix1>,
+    sum_trees: &Array<f64, Ix2>,
     config: &BartConfig,
     data: &DataView,
     split_rules: &[SplitRules],
 ) -> MutationDecision {
     let depth = particle.tree.get_depth(node_idx);
-    let prob_not_expanding = 1.0 - (config.alpha * (1.0 + depth as f64).powf(-config.beta));
-
-    if prob_not_expanding > rng.random::<f64>() {
-        return MutationDecision::Reject;
+    if depth == 0 {
+        // continue;
+    } else {
+        let prob_not_expanding = 1.0 - (config.alpha * (depth as f64).powf(-config.beta));
+        if prob_not_expanding > rng.random::<f64>() {
+            return MutationDecision::Reject;
+        }
     }
+
+    // let prob_not_expanding = 1.0 - (config.alpha * (1.0 + depth as f64).powf(-config.beta));
+    // println!("For depth {}, the probability of not expanding {}", depth, prob_not_expanding);
+
+    // if prob_not_expanding > rng.random::<f64>() {
+    //     return MutationDecision::Reject;
+    // }
 
     let node_samples = particle.leaf_samples(node_idx);
     if node_samples.is_empty() {
@@ -173,7 +204,7 @@ fn propose_mutation(
         node_samples,
         &col,
         split_val,
-        ensemble_predictions,
+        sum_trees,
         config,
     );
 
@@ -191,50 +222,52 @@ fn propose_leaf_values(
     node_samples: &[u32],
     col: &ArrayView1<f64>,
     split_val: f64,
-    ensemble_predictions: &Array<f64, Ix1>,
+    sum_trees: &Array<f64, Ix2>,
     config: &BartConfig,
-) -> (f64, f64) {
-    let pred_slice = ensemble_predictions
-        .as_slice()
-        .expect("ensemble_predictions must be contiguous");
+) -> (Vec<f64>, Vec<f64>) {
+    let n_outputs = config.n_outputs;
 
-    let (left_sum, left_n, right_sum, right_n) = node_samples.iter().fold(
-        (0.0, 0usize, 0.0, 0usize),
-        |(mut l_sum, mut l_n, mut r_sum, mut r_n), &s| {
-            let idx = s as usize;
-            // SAFETY: indices come from particle.leaf_to_samples and are in [0, n_samples).
-            let v = unsafe { *col.uget(idx) };
-            let p = unsafe { *pred_slice.get_unchecked(idx) };
+    // Initialize accumulators per output
+    let mut left_sum = vec![0.0f64; n_outputs];
+    let mut left_n = vec![0usize; n_outputs];
+    let mut right_sum = vec![0.0f64; n_outputs];
+    let mut right_n = vec![0usize; n_outputs];
+
+    for &s in node_samples.iter() {
+        let idx = s as usize;
+        let v = unsafe { *col.uget(idx) };
+        for o in 0..n_outputs {
+            let p = unsafe { *sum_trees.uget([o, idx]) };
             if v < split_val {
-                l_sum += p;
-                l_n += 1;
+                left_sum[o] += p;
+                left_n[o] += 1;
             } else {
-                r_sum += p;
-                r_n += 1;
+                right_sum[o] += p;
+                right_n[o] += 1;
             }
-            (l_sum, l_n, r_sum, r_n)
-        },
-    );
+        }
+    }
 
     let dist = Normal::new(0.0, 1.0).unwrap();
 
-    let left_value = {
+    let mut left_value = vec![0.0f64; n_outputs];
+    let mut right_value = vec![0.0f64; n_outputs];
+    for o in 0..n_outputs {
         let noise = dist.sample(rng) * config.sigma;
-        if left_n == 0 {
+        left_value[o] = if left_n[o] == 0 {
             noise
         } else {
-            left_sum / left_n as f64 / config.n_trees as f64 + noise
-        }
-    };
+            left_sum[o] / left_n[o] as f64 / config.n_trees as f64 + noise
+        };
 
-    let right_value = {
-        let noise = dist.sample(rng) * config.sigma;
-        if right_n == 0 {
-            noise
+
+        let noise_r = dist.sample(rng) * config.sigma;
+        right_value[o] = if right_n[o] == 0 {
+            noise_r
         } else {
-            right_sum / right_n as f64 / config.n_trees as f64 + noise
-        }
-    };
+            right_sum[o] / right_n[o] as f64 / config.n_trees as f64 + noise_r
+        };
+    }
 
     (left_value, right_value)
 }

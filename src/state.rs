@@ -1,4 +1,4 @@
-use numpy::ndarray::Array1;
+use numpy::ndarray::Array2;
 
 use crate::tree::TreeArrays;
 
@@ -6,12 +6,18 @@ use crate::tree::TreeArrays;
 #[derive(Clone)]
 pub struct BartState {
     pub forest: Vec<TreeArrays>,
-    pub predictions: Array1<f64>,
+    pub predictions: Array2<f64>,
     pub variable_inclusion: Vec<u32>,
     /// Round-robin index of the next tree to update.
     pub next_tree_idx: usize,
     /// Whether the sampler is in tune mode (selects which batch fraction to use).
     pub tune: bool,
+}
+
+impl BartState { 
+    pub fn get_variable_inclusion(&self) -> Vec<u32> {
+        self.variable_inclusion.clone()
+    }
 }
 
 /// Diagnostic information from a single sampling step.

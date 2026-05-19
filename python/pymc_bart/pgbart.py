@@ -29,6 +29,7 @@ from pytensor.graph.basic import Variable
 from pymc_bart.bart import BARTRV
 from pymc_bart.compile_pymc import CompiledPyMCModel
 from pymc_bart.pymc_bart import PyBartSettings, PySampler
+from pymc_bart.utils import _encode_vi
 
 
 class PGBART(ArrayStepShared):
@@ -94,7 +95,10 @@ class PGBART(ArrayStepShared):
         self.response = self.bart.response
 
         shape = initial_point[value_bart.name].shape
+
+
         self.shape = 1 if len(shape) == 1 else shape[0]
+
 
         # Set trees_shape (dim for separate tree structures)
         # and leaves_shape (dim for leaf node values)
@@ -158,6 +162,7 @@ class PGBART(ArrayStepShared):
             alpha=self.bart.alpha,
             beta=self.bart.beta,
             sigma=sigma,
+            n_outputs=self.shape,
             split_prior=splitting_probs.tolist(),
             split_rules=split_rules,
             response_rule=self.bart.response,
@@ -179,6 +184,7 @@ class PGBART(ArrayStepShared):
             "alpha": self.bart.alpha,
             "beta": self.bart.beta,
             "sigma": sigma,
+            "n_outputs": self.shape,
             "split_prior": splitting_probs.tolist(),
             "split_rules": split_rules,
             "response_rule": self.bart.response,
@@ -230,20 +236,23 @@ class PGBART(ArrayStepShared):
                     model=self.compiled_pymc_model.get_function_pointer(),
                     settings=settings,
                 )
-            except Exception:
-                self.compiled_pymc_model = None
-                self.pg_bart = None
+            except Exception as e:
+                raise RuntimeError(f"Failed to rebuild compiled objects in PGBART after unpickling: {e}")
+
 
     def astep(self, _):
     #     # Record time to quantify performance improvements
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
     #     sum_trees, variable_inclusion = step(self.state, self.tune)
-        sum_trees = self.pg_bart.step(self.tune)
+
+        sum_trees, trees, variable_inclusion = self.pg_bart.step(self.tune)
+        if not self.tune:
+            self.bart.all_trees.append([trees]) # this doubles runtime
         t1 = perf_counter()
 
         stats = {
-            "variable_inclusion": np.array([0.0]),
+            "variable_inclusion": _encode_vi(variable_inclusion),
             "tune": self.tune,
             "time": t1 - t0,
         }

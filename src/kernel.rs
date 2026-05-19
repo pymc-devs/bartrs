@@ -1,4 +1,4 @@
-use numpy::ndarray::Array1;
+use numpy::ndarray::{Array2};
 use rand::Rng;
 use rand::rngs::SmallRng;
 
@@ -42,12 +42,15 @@ where
         let y_mean = self.data.y.mean().unwrap_or(0.0);
         let init_leaf_value = y_mean / self.config.n_trees as f64;
 
+        // let n_outputs = self.data.n_outputs();
+        let n_outputs = self.config.n_outputs;
         let forest: Vec<TreeArrays> = (0..self.config.n_trees)
-            .map(|_| TreeArrays::new(init_leaf_value, n_samples, self.config.max_depth))
+            .map(|_| TreeArrays::new(init_leaf_value, n_samples, self.config.max_depth, n_outputs))
             .collect();
 
-        // Sum of all initial trees = n_trees * init_leaf_value = y_mean.
-        let predictions = Array1::from_elem(n_samples, y_mean);
+        // Predictions now support multi-output: shape (n_outputs, n_samples)
+        // let n_outputs = self.data.n_outputs();
+        let predictions = Array2::from_elem((n_outputs, n_samples), y_mean);
         let variable_inclusion = vec![0u32; self.data.n_features()];
 
         BartState {
@@ -72,34 +75,41 @@ where
         let batch_size = ((batch_frac * n_trees as f64).round() as usize)
             .max(1)
             .min(n_trees);
+        // eprintln!("batch_frac={}, n_trees={}, batch_size={}", batch_frac, n_trees, batch_size);
 
         let mut acceptance_count = 0;
         let mut tree_depths = Vec::with_capacity(batch_size);
         let mut total_log_likelihood = 0.0;
 
-        let mut residuals_buf = Array1::zeros(n_samples);
-        let mut tree_pred_buf = Array1::zeros(n_samples);
+        let mut variable_inclusion = vec![0u32; self.data.n_features()];
+
+        // let mut residuals_buf = Array2::zeros((self.data.n_outputs(), n_samples));
+        // let mut tree_pred_buf = Array2::zeros((self.data.n_outputs(), n_samples));
+
+        let mut residuals_buf = Array2::zeros((self.config.n_outputs, n_samples));
+        let mut tree_pred_buf = Array2::zeros((self.config.n_outputs, n_samples));
 
         for k in 0..batch_size {
             let tree_idx = (state.next_tree_idx + k) % n_trees;
 
             // residuals = sum of all OTHER trees = predictions - old_tree.predict()
-            state.forest[tree_idx].predict_training_into(&mut tree_pred_buf);
+            state.forest[tree_idx].predict_training_into_multi(&mut tree_pred_buf);
             residuals_buf.assign(&state.predictions);
             residuals_buf -= &tree_pred_buf;
 
             let (new_tree, step_info) = smc_step(
                 rng,
-                &residuals_buf,
+                &state.predictions,
                 &self.config,
                 &data_view,
                 &self.split_rules,
                 &self.resampling,
                 &self.weight_fn,
+                state.forest[tree_idx].clone(),
             );
 
             // predictions = residuals + new_tree.predict()
-            new_tree.predict_training_into(&mut tree_pred_buf);
+            new_tree.predict_training_into_multi(&mut tree_pred_buf);
             state.predictions.assign(&residuals_buf);
             state.predictions += &tree_pred_buf;
 
@@ -113,8 +123,26 @@ where
                 .unwrap_or(0);
             tree_depths.push(depth);
 
+            for sv in new_tree.split_var.iter().take(new_tree.size) {
+                if *sv != u32::MAX && !state.tune {
+                    variable_inclusion[*sv as usize] += 1;
+                }
+            }
+
             state.forest[tree_idx] = new_tree;
         }
+
+        /* 
+        let mut variable_inclusion = vec![0u32; self.data.n_features()];
+        for tree in &state.forest {
+            for &split_var in tree.split_var.iter().take(tree.size) {
+                if (split_var != u32::MAX && !state.tune) {
+                    variable_inclusion[split_var as usize] += 1;
+                }
+            }
+        }
+        */ 
+        state.variable_inclusion = variable_inclusion;
 
         state.next_tree_idx = (state.next_tree_idx + batch_size) % n_trees;
 

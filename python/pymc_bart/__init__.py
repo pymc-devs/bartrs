@@ -6,7 +6,6 @@ from pymc_bart.pgbart import PGBART
 from pymc_bart.utils import (
     compute_variable_importance,
     plot_convergence,
-    plot_dependence,
     plot_ice,
     plot_pdp,
     plot_scatter_submodels,
@@ -20,7 +19,6 @@ __all__ = [
     "CompiledPyMCModel",
     "compute_variable_importance",
     "plot_convergence",
-    "plot_dependence",
     "plot_ice",
     "plot_pdp",
     "plot_scatter_submodels",

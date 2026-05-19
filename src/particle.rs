@@ -59,8 +59,8 @@ pub struct Particle {
 }
 
 impl Particle {
-    pub fn new(init_leaf_value: f64, n_samples: usize, max_depth: u8) -> Self {
-        let tree = Arc::new(TreeArrays::new(init_leaf_value, n_samples, max_depth));
+    pub fn new(init_leaf_value: f64, n_samples: usize, max_depth: u8, n_outputs: usize) -> Self {
+        let tree = Arc::new(TreeArrays::new(init_leaf_value, n_samples, max_depth, n_outputs));
         Self {
             tree,
             expandable_nodes: VecDeque::from([0]),
@@ -68,13 +68,50 @@ impl Particle {
         }
     }
 
-    pub fn new_reference(init_leaf_value: f64, n_samples: usize, max_depth: u8) -> Self {
-        let tree = Arc::new(TreeArrays::new(init_leaf_value, n_samples, max_depth));
+    pub fn new_reference(init_leaf_value: f64, n_samples: usize, max_depth: u8, n_outputs: usize) -> Self {
+        let tree = Arc::new(TreeArrays::new(init_leaf_value, n_samples, max_depth, n_outputs));
         Self {
             tree,
             expandable_nodes: VecDeque::new(),
             sample_map: LeafSamplesFlat::new(n_samples, max_depth),
         }
+    }
+
+    pub fn from_reference(tree: TreeArrays, n_samples: usize, max_depth: u8) -> Self {
+
+        let mut sample_map = LeafSamplesFlat::new(n_samples, max_depth);
+
+        sample_map.node_len.fill(0);
+        sample_map.node_start.fill(0);
+
+        // count the number of samples in each leaf
+        for &leaf_idx in tree.leaf_indices.iter() {
+            sample_map.node_len[leaf_idx as usize] += 1;
+        }
+
+        let mut offset = 0 as u32;
+        for i in 0..sample_map.node_start.len() {
+            sample_map.node_start[i] = offset;
+            offset += sample_map.node_len[i] as u32;
+        }
+
+        let mut leaf_counter = vec![0u32; sample_map.node_start.len()];
+        for (sample, &leaf_idx) in tree.leaf_indices.iter().enumerate() {
+            let leaf_idx = leaf_idx as usize;
+            let pos = (sample_map.node_start[leaf_idx] + leaf_counter[leaf_idx]) as usize;
+            sample_map.data[pos] = sample as u32;
+            leaf_counter[leaf_idx] += 1;
+
+        }
+
+        let mut expandable_nodes = VecDeque::new();
+        for node_idx in 0..tree.size {
+            if tree.is_leaf(node_idx) {
+                expandable_nodes.push_back(node_idx as u32);
+            }
+        }
+
+        Self { tree: Arc::new(tree), expandable_nodes, sample_map }
     }
 
     pub fn has_expandable_nodes(&self) -> bool {
@@ -112,8 +149,8 @@ impl Particle {
             node_idx,
             proposal.split_var,
             split_val,
-            proposal.left_value,
-            proposal.right_value,
+            &proposal.left_value,
+            &proposal.right_value,
         );
 
         let start = self.sample_map.node_start[node_idx] as usize;
@@ -146,6 +183,10 @@ impl Particle {
             l
         };
 
+        tree.node_nvalue[node_idx] = len as f64;
+        tree.node_nvalue[left_child] = left_count as f64;
+        tree.node_nvalue[right_child] = (len - left_count) as f64;
+
         self.sample_map.node_start[left_child] = start as u32;
         self.sample_map.node_len[left_child] = left_count as u32;
         self.sample_map.node_start[right_child] = (start + left_count) as u32;
@@ -170,7 +211,7 @@ mod tests {
 
     #[test]
     fn test_particle_clone_shares_arc() {
-        let p = Particle::new(0.0, 10, 3);
+        let p = Particle::new(0.0, 10, 3, 1);
         let q = p.clone();
         assert!(Arc::ptr_eq(&p.tree, &q.tree));
     }
@@ -179,14 +220,14 @@ mod tests {
     fn test_apply_mutation_partitions_correctly() {
         // x: 5 samples, 1 feature: [0, 1, 2, 3, 4]
         let x = Array2::from_shape_fn((5, 1), |(i, _)| i as f64);
-        let mut p = Particle::new(0.0, 5, 3);
+        let mut p = Particle::new(0.0, 5, 3, 1);
 
         let proposal = TreeProposal {
             node_idx: 0,
             split_var: 0,
             split_val: 2.5,
-            left_value: -1.0,
-            right_value: 1.0,
+            left_value: vec![-1.0],
+            right_value: vec![1.0],
         };
         p.apply_mutation(&proposal, x.view());
 
@@ -212,7 +253,7 @@ mod tests {
     #[test]
     fn test_apply_mutation_cow_unshares_arc() {
         let x = Array2::from_shape_fn((4, 1), |(i, _)| i as f64);
-        let p = Particle::new(0.0, 4, 3);
+        let p = Particle::new(0.0, 4, 3, 1);
         let mut q = p.clone();
 
         // p and q share the same Arc before mutation.
@@ -222,8 +263,8 @@ mod tests {
             node_idx: 0,
             split_var: 0,
             split_val: 2.0,
-            left_value: -1.0,
-            right_value: 1.0,
+            left_value: vec![-1.0],
+            right_value: vec![1.0],
         };
         q.apply_mutation(&proposal, x.view());
 
@@ -231,6 +272,18 @@ mod tests {
         assert!(!Arc::ptr_eq(&p.tree, &q.tree));
         assert!(p.tree.is_leaf(0), "original particle tree should still be root-only");
         assert!(!q.tree.is_leaf(0), "mutated particle tree should be split");
+    }
+
+    #[test]
+    fn test_from_reference_queues_leaf_nodes() {
+        let mut tree = TreeArrays::new(0.0, 4, 3, 1);
+        tree.split_node(0, 0, 1.5, &[-1.0], &[1.0]);
+        tree.leaf_indices = vec![1, 1, 2, 2];
+
+        let particle = Particle::from_reference(tree, 4, 3);
+        let queued: Vec<u32> = particle.expandable_nodes.iter().copied().collect();
+
+        assert_eq!(queued, vec![1, 2]);
     }
 
     #[test]
