@@ -1,4 +1,4 @@
-use numpy::ndarray::{Array2, ArrayView2};
+use numpy::ndarray::{Array2, ArrayView2, Axis};
 
 /// Zero-copy view into training data.
 pub struct DataView<'a> {
@@ -56,7 +56,14 @@ impl OwnedData {
         self.x.ncols()
     }
 
-    pub fn n_outputs(&self) -> usize {
-        self.y.nrows()
+    /* 
+    Input is (n_outputs, n_samples), returns the first output. There should be a cleaner way to do this. 
+    This computes the std over samples axis when initializing the kernel. 
+    Should not be used when actually updating the running std since then each leaf output dimension must have distinct std.
+    Thus, a future TODO is to maybe assert that all std values are the same over the n_outputs axis.
+    */
+    pub fn y_std_as_scalar(&self) -> f64 {
+        self.y.std_axis(Axis(1), 0.0)[0] 
     }
+    
 }

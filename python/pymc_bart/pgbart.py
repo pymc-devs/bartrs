@@ -248,7 +248,7 @@ class PGBART(ArrayStepShared):
 
         sum_trees, trees, variable_inclusion = self.pg_bart.step(self.tune)
         if not self.tune:
-            self.bart.all_trees.append([trees]) # this doubles runtime
+            self.bart.all_trees.append(trees) # this doubles runtime
         t1 = perf_counter()
 
         stats = {

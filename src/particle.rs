@@ -56,6 +56,7 @@ pub struct Particle {
     pub tree: Arc<TreeArrays>,
     pub expandable_nodes: VecDeque<u32>,
     pub sample_map: LeafSamplesFlat,
+    pub log_weight: f64,
 }
 
 impl Particle {
@@ -65,6 +66,7 @@ impl Particle {
             tree,
             expandable_nodes: VecDeque::from([0]),
             sample_map: LeafSamplesFlat::new(n_samples, max_depth),
+            log_weight: 0.0,
         }
     }
 
@@ -74,6 +76,7 @@ impl Particle {
             tree,
             expandable_nodes: VecDeque::new(),
             sample_map: LeafSamplesFlat::new(n_samples, max_depth),
+            log_weight: 0.0,
         }
     }
 
@@ -111,7 +114,7 @@ impl Particle {
             }
         }
 
-        Self { tree: Arc::new(tree), expandable_nodes, sample_map }
+        Self { tree: Arc::new(tree), expandable_nodes, sample_map, log_weight: 0.0 }
     }
 
     pub fn has_expandable_nodes(&self) -> bool {
@@ -171,7 +174,7 @@ impl Particle {
                 // SAFETY: sample indices are in [0, n_samples); col and leaf_indices
                 // both have length n_samples by construction.
                 let v = unsafe { *col.uget(idx) };
-                if v < split_val {
+                if v <= split_val {
                     unsafe { *leaf_indices.get_unchecked_mut(idx) = lc }
                     l += 1;
                 } else {

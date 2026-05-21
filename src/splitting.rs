@@ -40,6 +40,7 @@ impl SplitRule for ContinuousSplit {
     where
         I: Iterator<Item = Self::Value>,
     {
+        /*
         let mut candidates = candidates.peekable();
         candidates.peek()?;
 
@@ -53,6 +54,19 @@ impl SplitRule for ContinuousSplit {
         }
 
         Some(rng.random_range(min_val..max_val))
+        */
+
+        let cands: Vec<Self::Value> = candidates.collect();
+
+        if cands.len() > 1 {
+            let idx_split_value = rng.random_range(0..cands.len());
+
+            let split_value = cands[idx_split_value];
+
+            return Some(split_value);
+        } else {
+            return None;
+        }
     }
 
     fn split_data_indices<I>(
@@ -65,7 +79,7 @@ impl SplitRule for ContinuousSplit {
     where
         I: Iterator<Item = usize>,
     {
-        data_indices.partition(|&idx| data[[idx, feature_idx]] < threshold)
+        data_indices.partition(|&idx| data[[idx, feature_idx]] <= threshold)
     }
 }
 

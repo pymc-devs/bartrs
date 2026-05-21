@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use numpy::ndarray::{Array, ArrayView1, Ix2};
+use numpy::ndarray::{Array, ArrayView1, Array1, Ix2, Ix1};
 use rand::Rng;
 use rand::distr::weighted::WeightedIndex;
 use rand_distr::{Distribution, Normal};
@@ -32,6 +32,7 @@ pub fn smc_step<R, W>(
     resampling: &R,
     weight_fn: &W,
     current_tree: TreeArrays,
+    leaf_sd: &Array1<f64>,
 ) -> (TreeArrays, SmcStepInfo)
 where
     R: ResamplingStrategy,
@@ -83,6 +84,7 @@ where
                     config,
                     data,
                     split_rules,
+                    leaf_sd,
                 ) {
                     MutationDecision::Accept(proposal) => {
                         particle.pop_next_expandable();
@@ -97,15 +99,18 @@ where
             }
         }
 
-        for (i, particle) in particles[1..].iter().enumerate() {
+        for (i, particle) in particles[1..].iter_mut().enumerate() {
             if mutated[i] {
-                        predictions_buf.fill(0.0);
-                        particle.tree.predict_training_into_multi(&mut predictions_buf);
-                        predictions_buf += &sum_trees_noi;
-                    let flat: Vec<f64> = predictions_buf.iter().copied().collect();
-                    inner_weights[i] = weight_fn.log_weight(&flat);
+                predictions_buf.fill(0.0);
+                particle.tree.predict_training_into_multi(&mut predictions_buf);
+                predictions_buf += &sum_trees_noi;
+                let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+                particle.log_weight = weight_fn.log_weight(&flat);
             }
         }
+
+        inner_weights.copy_from_slice(&particles[1..].iter().map(|p| p.log_weight).collect::<Vec<f64>>());
+
         normalize_weights_inplace(&mut inner_weights);
 
         resampling.resample_into(rng, &inner_weights, &mut ancestors_buf);
@@ -125,7 +130,6 @@ where
     }
 
     let mut weights = log_weights.clone();
-
 
     normalize_weights_inplace(&mut weights);
 
@@ -159,23 +163,17 @@ fn propose_mutation(
     config: &BartConfig,
     data: &DataView,
     split_rules: &[SplitRules],
+    leaf_sd: &Array1<f64>,
 ) -> MutationDecision {
     let depth = particle.tree.get_depth(node_idx);
     if depth == 0 {
         // continue;
     } else {
-        let prob_not_expanding = 1.0 - (config.alpha * (depth as f64).powf(-config.beta));
+        let prob_not_expanding = 1.0 - (config.alpha * (1.0 + depth as f64).powf(-config.beta));
         if prob_not_expanding > rng.random::<f64>() {
             return MutationDecision::Reject;
         }
     }
-
-    // let prob_not_expanding = 1.0 - (config.alpha * (1.0 + depth as f64).powf(-config.beta));
-    // println!("For depth {}, the probability of not expanding {}", depth, prob_not_expanding);
-
-    // if prob_not_expanding > rng.random::<f64>() {
-    //     return MutationDecision::Reject;
-    // }
 
     let node_samples = particle.leaf_samples(node_idx);
     if node_samples.is_empty() {
@@ -201,11 +199,12 @@ fn propose_mutation(
 
     let (left_value, right_value) = propose_leaf_values(
         rng,
-        node_samples,
+        &node_samples,
         &col,
         split_val,
         sum_trees,
         config,
+        leaf_sd,
     );
 
     MutationDecision::Accept(TreeProposal {
@@ -224,6 +223,7 @@ fn propose_leaf_values(
     split_val: f64,
     sum_trees: &Array<f64, Ix2>,
     config: &BartConfig,
+    leaf_sd: &Array1<f64>,
 ) -> (Vec<f64>, Vec<f64>) {
     let n_outputs = config.n_outputs;
 
@@ -238,7 +238,7 @@ fn propose_leaf_values(
         let v = unsafe { *col.uget(idx) };
         for o in 0..n_outputs {
             let p = unsafe { *sum_trees.uget([o, idx]) };
-            if v < split_val {
+            if v <= split_val {
                 left_sum[o] += p;
                 left_n[o] += 1;
             } else {
@@ -252,8 +252,9 @@ fn propose_leaf_values(
 
     let mut left_value = vec![0.0f64; n_outputs];
     let mut right_value = vec![0.0f64; n_outputs];
+
     for o in 0..n_outputs {
-        let noise = dist.sample(rng) * config.sigma;
+        let noise = dist.sample(rng) * leaf_sd[o]; // * config.sigma;
         left_value[o] = if left_n[o] == 0 {
             noise
         } else {
@@ -261,7 +262,7 @@ fn propose_leaf_values(
         };
 
 
-        let noise_r = dist.sample(rng) * config.sigma;
+        let noise_r = dist.sample(rng) * leaf_sd[o]; // *config.sigma;
         right_value[o] = if right_n[o] == 0 {
             noise_r
         } else {
@@ -272,18 +273,14 @@ fn propose_leaf_values(
     (left_value, right_value)
 }
 
-fn sample_feature_from_probs(rng: &mut impl Rng, probs: &[f64]) -> usize {
-    let total: f64 = probs.iter().sum();
-    let mut target = rng.random::<f64>() * total;
-
-    for (idx, &prob) in probs.iter().enumerate() {
-        target -= prob;
-        if target <= 0.0 {
-            return idx;
-        }
-    }
-
-    probs.len() - 1
+#[inline]
+fn sample_feature_from_probs(rng: &mut impl Rng, cdf: &[f64]) -> usize {
+    let total = match cdf.last().copied() {
+        Some(t) if t > 0.0 => t,
+        _ => return 0,
+    };
+    let u = rng.random::<f64>() * total;
+    cdf.partition_point(|&c| c < u)
 }
 
 /// Normalize log-weights in-place using log-sum-exp for numerical stability.

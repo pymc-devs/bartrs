@@ -215,16 +215,8 @@ impl TreeArrays {
 
         for &sample_idx in affected_samples {
             let sample_val = x_data[[sample_idx, split_var as usize]];
-            let child_offset = (sample_val >= split_val) as u32;
+            let child_offset = (sample_val > split_val) as u32;
             self.leaf_indices[sample_idx] = base_child + child_offset;
-        }
-    }
-
-    pub fn compute_variable_inclusion(&self, state: &mut BartState) {
-        for &split_var in self.split_var.iter().take(self.size) {
-            if split_var != LEAF_SENTINEL {
-                state.variable_inclusion[split_var as usize] += 1; 
-            }
         }
     }
 
@@ -266,34 +258,6 @@ impl TreeArrays {
     }
 
     /// Predict on test data by traversing the tree. Returns shape (n_outputs, n_test_samples).
-    pub fn _predict_batch_test(&self, data: &Array<f64, Ix2>) -> Array<f64, Ix2> {
-        let n_samples = data.nrows();
-        let mut predictions = Array2::zeros((self.n_outputs, n_samples));
-
-        for (sample_idx, sample) in data.outer_iter().enumerate() {
-            let mut node_idx = 0usize;
-
-            while node_idx < self.size && !self.is_leaf(node_idx) {
-                let sv = self.split_var[node_idx] as usize;
-                let st = self.split_val[node_idx];
-
-                if sample[sv] < st {
-                    node_idx = 2 * node_idx + 1;
-                } else {
-                    node_idx = 2 * node_idx + 2;
-                }
-            }
-
-            if node_idx < self.size && self.is_leaf(node_idx) {
-                for out_idx in 0..self.n_outputs {
-                    predictions[[out_idx, sample_idx]] = self.leaf_val[node_idx * self.n_outputs + out_idx];
-                }
-            }
-        }
-
-        predictions
-    }
-
     pub fn predict_batch_test(&self, data: &Array<f64, Ix2>, excluded: &Vec<usize>) -> Array<f64, Ix2> {
         let n_samples = data.nrows();
         let mut predictions = Array2::zeros((self.n_outputs, n_samples));
@@ -301,9 +265,6 @@ impl TreeArrays {
         let mut stack: Vec<(usize, Array1<f64>, usize)> = vec![(0usize, Array1::ones(n_samples), 0usize)];
 
         while !stack.is_empty() {
-            //println!("Excluded set is {:?}", excluded);
-
-
             let (node_idx, weights, _idx_split) = stack.pop().unwrap();
 
 
@@ -319,23 +280,19 @@ impl TreeArrays {
 
                 let left = 2*node_idx + 1;
                 let right = 2*node_idx + 2;
-                //println!("Split var is {}", sv);
 
-                if (!excluded.is_empty()) && !excluded.contains(&sv) {
-                    //println!("Split variable {} is in the excluded set, using nvalue-based proportions", sv);
+                if (!excluded.is_empty()) && excluded.contains(&sv) {
                     let node_nvalue = self.node_nvalue[node_idx];
 
                     let left_nvalue = self.node_nvalue[left];
 
                     let prop_nvalue_left = if node_nvalue > 0.0 { left_nvalue / node_nvalue } else { 0.0 };
 
-                    //println!("Node nvalue: {}, Left nvalue: {}, Proportion left: {}", node_nvalue, left_nvalue, prop_nvalue_left);
-
                     stack.push((left, weights.clone()*prop_nvalue_left, sv));
                     stack.push((right, weights.clone()*(1.0 - prop_nvalue_left), sv));
                 } else { 
                     let to_left = data.column(sv).map(|i| {
-                        if *i < st {
+                        if *i <= st {
                             1.0
                         } else {
                             0.0
@@ -439,7 +396,7 @@ mod tests {
     fn test_multioutput_leaf_values() {
         let mut tree = TreeArrays::new(0.0, 3, 3, 2);
         // root leaf has two outputs both init 0.0
-        assert_eq!(tree.leaf_val.len(), tree.n_outputs * max_nodes_for_depth(tree.max_depth));
+        assert_eq!(tree.leaf_val.len(), 2);
         // split root, set left=[1,2], right=[3,4]
         tree.split_node(0, 0, 0.5, &[1.0, 2.0], &[3.0, 4.0]);
         assert_eq!(tree.leaf_val[1 * 2 + 0], 1.0);

@@ -1,4 +1,4 @@
-use numpy::ndarray::{Array2};
+use numpy::ndarray::{Array1, Array2, Axis};
 use rand::Rng;
 use rand::rngs::SmallRng;
 
@@ -10,6 +10,38 @@ use crate::splitting::SplitRules;
 use crate::state::{BartInfo, BartState};
 use crate::tree::TreeArrays;
 use crate::weight::WeightFn;
+
+
+/// Welford's online algorithm for compute variance
+#[derive(Clone)]
+pub struct RunningSd {
+    /// Number of data points used in computing std. Might be different from number of rows in X data.
+    pub count: usize,
+    /// The shape of the leaves
+    pub shape: usize,
+    /// Running mean
+    pub mean: Array2<f64>,
+    /// Running second moment
+    pub m2: Array2<f64>,
+}
+
+impl RunningSd {
+    pub fn new(shape: usize, num_samples: usize) -> Self {
+        Self { count: 0, shape: shape, mean: Array2::zeros((shape, num_samples)), m2: Array2::zeros((shape, num_samples)) }
+    }
+
+    pub fn update(&mut self, new_value: &Array2<f64>) -> Array1<f64> {
+        self.count += 1;
+        let delta = new_value - &self.mean;
+        self.mean += &(delta.clone() / self.count as f64);
+        let delta2 = new_value - &self.mean;
+        self.m2 += &(delta * delta2);
+
+        let std = self.m2.mapv(|v| (v / self.count as f64).sqrt());
+        std.mean_axis(Axis(1)).unwrap()
+    }
+}
+
 
 /// BlackJAX-style sampling algorithm trait.
 pub trait SamplingAlgorithm {
@@ -41,17 +73,29 @@ where
         let n_samples = self.data.n_samples();
         let y_mean = self.data.y.mean().unwrap_or(0.0);
         let init_leaf_value = y_mean / self.config.n_trees as f64;
-
-        // let n_outputs = self.data.n_outputs();
+        let data_view = self.data.view();
+        let n_trees = self.config.n_trees;
         let n_outputs = self.config.n_outputs;
+        
         let forest: Vec<TreeArrays> = (0..self.config.n_trees)
             .map(|_| TreeArrays::new(init_leaf_value, n_samples, self.config.max_depth, n_outputs))
             .collect();
 
-        // Predictions now support multi-output: shape (n_outputs, n_samples)
-        // let n_outputs = self.data.n_outputs();
         let predictions = Array2::from_elem((n_outputs, n_samples), y_mean);
         let variable_inclusion = vec![0u32; self.data.n_features()];
+
+        let mut leaf_sd = Array1::ones(n_outputs);
+        let mut running_sd = RunningSd::new(n_outputs, n_samples);
+
+        let is_binary = data_view.y.iter().copied().all(|v| v == 0.0 || v == 1.0);
+
+        if is_binary {
+            leaf_sd = Array1::from_elem(n_outputs, 3.0 / (n_trees as f64).sqrt());
+        } else {
+            let scale = (n_trees as f64).sqrt();
+            let y_std = self.data.y_std_as_scalar();
+            leaf_sd = leaf_sd.mapv(|_| y_std / scale);
+        }
 
         BartState {
             forest,
@@ -59,6 +103,10 @@ where
             variable_inclusion,
             next_tree_idx: 0,
             tune: true,
+            running_sd: running_sd,
+            leaf_sd: leaf_sd,
+            iter: 0,
+            stump_count: 0,
         }
     }
 
@@ -75,16 +123,12 @@ where
         let batch_size = ((batch_frac * n_trees as f64).round() as usize)
             .max(1)
             .min(n_trees);
-        // eprintln!("batch_frac={}, n_trees={}, batch_size={}", batch_frac, n_trees, batch_size);
 
         let mut acceptance_count = 0;
         let mut tree_depths = Vec::with_capacity(batch_size);
         let mut total_log_likelihood = 0.0;
 
         let mut variable_inclusion = vec![0u32; self.data.n_features()];
-
-        // let mut residuals_buf = Array2::zeros((self.data.n_outputs(), n_samples));
-        // let mut tree_pred_buf = Array2::zeros((self.data.n_outputs(), n_samples));
 
         let mut residuals_buf = Array2::zeros((self.config.n_outputs, n_samples));
         let mut tree_pred_buf = Array2::zeros((self.config.n_outputs, n_samples));
@@ -106,7 +150,9 @@ where
                 &self.resampling,
                 &self.weight_fn,
                 state.forest[tree_idx].clone(),
+                &state.leaf_sd,
             );
+
 
             // predictions = residuals + new_tree.predict()
             new_tree.predict_training_into_multi(&mut tree_pred_buf);
@@ -123,25 +169,25 @@ where
                 .unwrap_or(0);
             tree_depths.push(depth);
 
+            /// Clean this maybe?
             for sv in new_tree.split_var.iter().take(new_tree.size) {
                 if *sv != u32::MAX && !state.tune {
                     variable_inclusion[*sv as usize] += 1;
                 }
             }
 
+            state.iter += 1;
+            if state.tune {
+                if state.iter > 2 {
+                    state.leaf_sd = state.running_sd.update(&tree_pred_buf);
+                } else {
+                    let _ = state.running_sd.update(&tree_pred_buf);
+                }
+
+            }
+
             state.forest[tree_idx] = new_tree;
         }
-
-        /* 
-        let mut variable_inclusion = vec![0u32; self.data.n_features()];
-        for tree in &state.forest {
-            for &split_var in tree.split_var.iter().take(tree.size) {
-                if (split_var != u32::MAX && !state.tune) {
-                    variable_inclusion[split_var as usize] += 1;
-                }
-            }
-        }
-        */ 
         state.variable_inclusion = variable_inclusion;
 
         state.next_tree_idx = (state.next_tree_idx + batch_size) % n_trees;
