@@ -233,7 +233,7 @@ impl PySampler {
 }
 
 #[pymodule]
-fn pymc_bart(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn pymc_bartrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBartSettings>()?;
     m.add_class::<PySampler>()?;
     m.add_class::<TreeArrays>()?;

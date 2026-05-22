@@ -26,10 +26,10 @@ from pymc.step_methods.arraystep import ArrayStepShared
 from pymc.step_methods.compound import Competence
 from pytensor.graph.basic import Variable
 
-from pymc_bart.bart import BARTRV
-from pymc_bart.compile_pymc import CompiledPyMCModel
-from pymc_bart.pymc_bart import PyBartSettings, PySampler
-from pymc_bart.utils import _encode_vi
+from pymc_bartrs.bart import BARTRV
+from pymc_bartrs.compile_pymc import CompiledPyMCModel
+from pymc_bartrs.pymc_bartrs import PyBartSettings, PySampler
+from pymc_bartrs.utils import _encode_vi
 
 
 class PGBART(ArrayStepShared):

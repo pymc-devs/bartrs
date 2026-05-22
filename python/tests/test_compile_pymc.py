@@ -1,7 +1,7 @@
 import pymc as pm
 import numpy as np
 
-from pymc_bart.compile_pymc import CompiledPyMCModel
+from pymc_bartrs.compile_pymc import CompiledPyMCModel
 
 n_obs = 1000
 X = np.random.randn(n_obs, 3)

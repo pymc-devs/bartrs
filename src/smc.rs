@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use numpy::ndarray::{Array, ArrayView1, Array1, Ix2, Ix1};
+use numpy::ndarray::{Array, ArrayView1, Array1, Ix2};
 use rand::Rng;
 use rand::distr::weighted::WeightedIndex;
 use rand_distr::{Distribution, Normal};

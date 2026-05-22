@@ -1,9 +1,9 @@
-import pymc as pm
+from pymc.sampling import mcmc
 
-from pymc_bart.bart import BART
-from pymc_bart.compile_pymc import CompiledPyMCModel
-from pymc_bart.pgbart import PGBART
-from pymc_bart.utils import (
+from pymc_bartrs.bart import BART
+from pymc_bartrs.compile_pymc import CompiledPyMCModel
+from pymc_bartrs.pgbart import PGBART
+from pymc_bartrs.utils import (
     compute_variable_importance,
     plot_convergence,
     plot_ice,
@@ -26,4 +26,6 @@ __all__ = [
     "plot_variable_inclusion",
 ]
 
-pm.STEP_METHODS = list(pm.STEP_METHODS) + [PGBART]
+methods = mcmc.STEP_METHODS
+if not any(method is PGBART for method in methods):
+    methods.append(PGBART)

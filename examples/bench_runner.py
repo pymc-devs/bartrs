@@ -18,8 +18,8 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import pymc as pm
-import pymc_bart as pmb
-from pymc_bart.pgbart import PGBART
+import pymc_bartrs as pmb
+from pymc_bartrs.pgbart import PGBART
 
 
 def build_coal_model(n_trees: int, n_particles: int) -> PGBART:

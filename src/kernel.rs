@@ -85,7 +85,7 @@ where
         let variable_inclusion = vec![0u32; self.data.n_features()];
 
         let mut leaf_sd = Array1::ones(n_outputs);
-        let mut running_sd = RunningSd::new(n_outputs, n_samples);
+        let running_sd = RunningSd::new(n_outputs, n_samples);
 
         let is_binary = data_view.y.iter().copied().all(|v| v == 0.0 || v == 1.0);
 
@@ -169,7 +169,7 @@ where
                 .unwrap_or(0);
             tree_depths.push(depth);
 
-            /// Clean this maybe?
+            // Clean this maybe?
             for sv in new_tree.split_var.iter().take(new_tree.size) {
                 if *sv != u32::MAX && !state.tune {
                     variable_inclusion[*sv as usize] += 1;

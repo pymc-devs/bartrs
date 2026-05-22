@@ -147,8 +147,6 @@ class BART(Distribution):
                 "The 'linear' option is experimental and not well tested. Use with caution."
             )
 
-
-
         if isinstance(split_rules, dict):
             required_dims =  set(range(X.shape[-1]))
             passed_dims = set(split_rules.keys())

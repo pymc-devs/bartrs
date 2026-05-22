@@ -419,7 +419,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pymc-bart"
+name = "pymc_bartrs"
 version = "0.2.0"
 dependencies = [
  "criterion",

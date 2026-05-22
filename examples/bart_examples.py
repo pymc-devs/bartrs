@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pymc_bart as pmb
+import pymc_bartrs as pmb
 
 RANDOM_SEED = 8457
 
