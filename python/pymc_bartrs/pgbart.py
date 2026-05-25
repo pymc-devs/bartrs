@@ -26,10 +26,10 @@ from pymc.step_methods.arraystep import ArrayStepShared
 from pymc.step_methods.compound import Competence
 from pytensor.graph.basic import Variable
 
-from pymc_bartrs.bart import BARTRV
+from pymc_bart.bart import BARTRV
 from pymc_bartrs.compile_pymc import CompiledPyMCModel
 from pymc_bartrs.pymc_bartrs import PyBartSettings, PySampler
-from pymc_bartrs.utils import _encode_vi
+from pymc_bart.utils import _encode_vi
 
 
 class PGBART(ArrayStepShared):
@@ -103,8 +103,6 @@ class PGBART(ArrayStepShared):
         # Set trees_shape (dim for separate tree structures)
         # and leaves_shape (dim for leaf node values)
         # One of the two is always one, the other equal to self.shape
-        self.trees_shape = self.shape if self.bart.separate_trees else 1
-        self.leaves_shape = self.shape if not self.bart.separate_trees else 1
 
         if self.bart.split_prior.size == 0:
             self.alpha_vec = np.ones(self.X.shape[1])
@@ -120,7 +118,7 @@ class PGBART(ArrayStepShared):
 
         # If data is binary
         # self.leaf_sd = np.ones((self.trees_shape, self.leaves_shape))
-        self.leaf_sd = np.ones(self.leaves_shape)
+        self.leaf_sd = np.ones(self.shape)
 
         y_unique = np.unique(self.bart.Y)
         if y_unique.size == 2 and np.all(y_unique == [0, 1]):
@@ -149,8 +147,6 @@ class PGBART(ArrayStepShared):
 
         max_depth = calculate_max_tree_depth(self.bart.alpha, self.bart.beta, probs_leaf=0.99)
 
-        split_rules = list(self.bart.split_rules.values())
-
         # Extract scalar sigma from leaf_sd array
         sigma = float(self.leaf_sd.ravel()[0])
 
@@ -164,7 +160,7 @@ class PGBART(ArrayStepShared):
             sigma=sigma,
             n_outputs=self.shape,
             split_prior=splitting_probs.tolist(),
-            split_rules=split_rules,
+            split_rules=self.split_rules,
             response_rule=self.bart.response,
             resampling_rule="systematic",
             batch_tune=batch[0],
@@ -186,7 +182,7 @@ class PGBART(ArrayStepShared):
             "sigma": sigma,
             "n_outputs": self.shape,
             "split_prior": splitting_probs.tolist(),
-            "split_rules": split_rules,
+            "split_rules": self.split_rules,
             "response_rule": self.bart.response,
             "resampling_rule": "systematic",
             "batch_tune": batch[0],

@@ -3,6 +3,13 @@ use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+// 1. remove pgbart.py from pymc-bart and use this sampler DONE
+// 2. linear terms
+// 3. logp for samples that only affect the tree
+// 4. monotonic response
+// 5. Reseaaaarch
+
+
 /// Bartz-style heap-indexed tree with separate internal/leaf arrays.
 ///
 /// Uses heap convention: root=0, left=2i+1, right=2i+2.
