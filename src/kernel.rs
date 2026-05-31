@@ -8,8 +8,9 @@ use crate::resampling::ResamplingStrategy;
 use crate::smc::smc_step;
 use crate::splitting::SplitRules;
 use crate::state::{BartInfo, BartState};
-use crate::tree::TreeArrays;
+use crate::tree::{TreeArrays, LEAF_SENTINEL};
 use crate::weight::WeightFn;
+use crate::response::ResponseStrategies;
 
 
 /// Welford's online algorithm for compute variance
@@ -115,6 +116,9 @@ where
         let n_samples = self.data.n_samples();
         let n_trees = self.config.n_trees;
 
+        let response = ResponseStrategies::from_name(&self.config.response)
+            .expect("Unknown response strategy");
+
         let batch_frac = if state.tune {
             self.config.batch_tune
         } else {
@@ -130,16 +134,16 @@ where
 
         let mut variable_inclusion = vec![0u32; self.data.n_features()];
 
-        let mut residuals_buf = Array2::zeros((self.config.n_outputs, n_samples));
+        let mut others_pred_buf = Array2::zeros((self.config.n_outputs, n_samples));
         let mut tree_pred_buf = Array2::zeros((self.config.n_outputs, n_samples));
 
         for k in 0..batch_size {
             let tree_idx = (state.next_tree_idx + k) % n_trees;
 
             // residuals = sum of all OTHER trees = predictions - old_tree.predict()
-            state.forest[tree_idx].predict_training_into_multi(&mut tree_pred_buf);
-            residuals_buf.assign(&state.predictions);
-            residuals_buf -= &tree_pred_buf;
+            state.forest[tree_idx].predict_training_into_multi(&mut tree_pred_buf, Some(data_view.x));
+            others_pred_buf.assign(&state.predictions);
+            others_pred_buf -= &tree_pred_buf;
 
             let (new_tree, step_info) = smc_step(
                 rng,
@@ -151,12 +155,13 @@ where
                 &self.weight_fn,
                 state.forest[tree_idx].clone(),
                 &state.leaf_sd,
+                &response,
             );
 
 
             // predictions = residuals + new_tree.predict()
-            new_tree.predict_training_into_multi(&mut tree_pred_buf);
-            state.predictions.assign(&residuals_buf);
+            new_tree.predict_training_into_multi(&mut tree_pred_buf, Some(data_view.x));
+            state.predictions.assign(&others_pred_buf);
             state.predictions += &tree_pred_buf;
 
             total_log_likelihood += step_info.log_likelihood;
@@ -169,9 +174,9 @@ where
                 .unwrap_or(0);
             tree_depths.push(depth);
 
-            // Clean this maybe?
+            // This is sort of ugly. Clean this maybe?
             for sv in new_tree.split_var.iter().take(new_tree.size) {
-                if *sv != u32::MAX && !state.tune {
+                if *sv != LEAF_SENTINEL && !state.tune {
                     variable_inclusion[*sv as usize] += 1;
                 }
             }

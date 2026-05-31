@@ -4,6 +4,7 @@ use std::sync::Arc;
 use numpy::ndarray::ArrayView2;
 
 use crate::tree::{TreeArrays, max_nodes_for_depth};
+use crate::response::{LeafPayload, LeafProposal};
 use crate::update::TreeProposal;
 
 /// Flat CSR-style mapping from leaf node index to sample indices.
@@ -104,7 +105,6 @@ impl Particle {
             let pos = (sample_map.node_start[leaf_idx] + leaf_counter[leaf_idx]) as usize;
             sample_map.data[pos] = sample as u32;
             leaf_counter[leaf_idx] += 1;
-
         }
 
         let mut expandable_nodes = VecDeque::new();
@@ -138,6 +138,7 @@ impl Particle {
     /// updating `leaf_indices` — all in a single O(k) pass with zero heap
     /// allocations.
     pub fn apply_mutation(&mut self, proposal: &TreeProposal, x_data: ArrayView2<f64>) {
+        let proposal = &proposal.leaf_proposal;
         let node_idx = proposal.node_idx;
         let split_var = proposal.split_var as usize;
         let split_val = proposal.split_val;
@@ -148,13 +149,7 @@ impl Particle {
 
         // COW: clones TreeArrays on the heap only when Arc is shared (refcount > 1).
         let tree = Arc::make_mut(&mut self.tree);
-        tree.split_node(
-            node_idx,
-            proposal.split_var,
-            split_val,
-            &proposal.left_value,
-            &proposal.right_value,
-        );
+        tree.split_node(node_idx, proposal.split_var, split_val, proposal.clone());
 
         let start = self.sample_map.node_start[node_idx] as usize;
         let len = self.sample_map.node_len[node_idx] as usize;
@@ -226,11 +221,13 @@ mod tests {
         let mut p = Particle::new(0.0, 5, 3, 1);
 
         let proposal = TreeProposal {
-            node_idx: 0,
-            split_var: 0,
-            split_val: 2.5,
-            left_value: vec![-1.0],
-            right_value: vec![1.0],
+            leaf_proposal: LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 2.5,
+                left: LeafPayload::Gaussian { value: vec![-1.0] },
+                right: LeafPayload::Gaussian { value: vec![1.0] },
+            },
         };
         p.apply_mutation(&proposal, x.view());
 
@@ -263,11 +260,13 @@ mod tests {
         assert!(Arc::ptr_eq(&p.tree, &q.tree));
 
         let proposal = TreeProposal {
-            node_idx: 0,
-            split_var: 0,
-            split_val: 2.0,
-            left_value: vec![-1.0],
-            right_value: vec![1.0],
+            leaf_proposal: LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 2.0,
+                left: LeafPayload::Gaussian { value: vec![-1.0] },
+                right: LeafPayload::Gaussian { value: vec![1.0] },
+            },
         };
         q.apply_mutation(&proposal, x.view());
 
@@ -280,7 +279,18 @@ mod tests {
     #[test]
     fn test_from_reference_queues_leaf_nodes() {
         let mut tree = TreeArrays::new(0.0, 4, 3, 1);
-        tree.split_node(0, 0, 1.5, &[-1.0], &[1.0]);
+        tree.split_node(
+            0,
+            0,
+            1.5,
+            LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 1.5,
+                left: LeafPayload::Gaussian { value: vec![-1.0] },
+                right: LeafPayload::Gaussian { value: vec![1.0] },
+            },
+        );
         tree.leaf_indices = vec![1, 1, 2, 2];
 
         let particle = Particle::from_reference(tree, 4, 3);

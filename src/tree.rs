@@ -3,11 +3,14 @@ use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-// 1. remove pgbart.py from pymc-bart and use this sampler DONE
-// 2. linear terms
-// 3. logp for samples that only affect the tree
+use crate::response::{LeafKind, LeafPayload, LeafProposal};
+
+// 1. DONE: remove pgbart.py from pymc-bart and use this sampler
+// 2. DONE: linear terms 
+// 3. CURRENT: logp for samples that only affect the tree
 // 4. monotonic response
-// 5. Reseaaaarch
+// 5. Hawks example with separate BARTRVs
+// 6. Reseaaaaarchff
 
 
 /// Bartz-style heap-indexed tree with separate internal/leaf arrays.
@@ -33,11 +36,22 @@ pub struct TreeArrays {
     pub max_depth: u8,
     /// Number of outputs (for multi-output tasks). If 1, behaviour is unchanged.
     pub n_outputs: usize,
-    
+    /// Counts of samples in each node
     pub node_nvalue: Vec<f64>,
+    /// Leaf type per node (0 = Gaussian, 1 = Linear, etc.)
+    pub leaf_kind: Vec<u8>,
+    /// Index into linear parameter arrays for linear leaf nodes, or usize::MAX if not applicable
+    pub leaf_param_idx: Vec<usize>,
+    /// Separate storage for linear leaf intercept
+    pub linear_intercept: Vec<Vec<f64>>,
+    /// Separate storage for linear leaf slope
+    pub linear_slope: Vec<Vec<f64>>,
+    /// Tells which variable is used in the linear leaf
+    pub linear_var: Vec<u32>,
 }
 
-const LEAF_SENTINEL: u32 = u32::MAX;
+pub const LEAF_SENTINEL: u32 = u32::MAX;
+const LEAF_PARAM_NONE: usize = usize::MAX;
  
 #[pymethods]
 impl TreeArrays {
@@ -50,12 +64,17 @@ impl TreeArrays {
         let mut split_val = Vec::with_capacity(max_nodes);
         let mut leaf_val = Vec::with_capacity(max_nodes * n_outputs.max(1));
 
+        let mut leaf_kind = Vec::with_capacity(max_nodes);
+        let mut leaf_param_idx = Vec::with_capacity(max_nodes);
+
         // Root is a leaf
         split_var.push(LEAF_SENTINEL);
         split_val.push(f64::NAN);
         for _ in 0..n_outputs.max(1) {
             leaf_val.push(init_leaf_value);
         }
+        leaf_kind.push(LeafKind::Gaussian.as_u8());
+        leaf_param_idx.push(LEAF_PARAM_NONE);
 
         let mut new_self = Self {
             split_var,
@@ -66,6 +85,11 @@ impl TreeArrays {
             max_depth,
             n_outputs: n_outputs.max(1),
             node_nvalue: vec![0.0; max_nodes],
+            leaf_kind,
+            leaf_param_idx,
+            linear_intercept: Vec::new(),
+            linear_slope: Vec::new(),
+            linear_var: Vec::new(),
         };
 
         new_self.node_nvalue[0] = n_samples as f64;
@@ -83,7 +107,11 @@ impl TreeArrays {
         dict.set_item("max_depth", self.max_depth)?;
         dict.set_item("n_outputs", self.n_outputs)?;
         dict.set_item("node_nvalue", self.node_nvalue.clone())?;
-        
+        dict.set_item("leaf_kind", self.leaf_kind.clone())?;
+        dict.set_item("leaf_param_idx", self.leaf_param_idx.clone())?;
+        dict.set_item("linear_intercept", self.linear_intercept.clone())?;
+        dict.set_item("linear_slope", self.linear_slope.clone())?;
+        dict.set_item("linear_var", self.linear_var.clone())?;
         Ok(dict.into())
     }
 
@@ -100,6 +128,11 @@ impl TreeArrays {
         self.max_depth = dict.get_item("max_depth").unwrap().expect("max_depth not found").extract()?;
         self.n_outputs = dict.get_item("n_outputs").unwrap().expect("n_outputs not found").extract()?;
         self.node_nvalue = dict.get_item("node_nvalue").unwrap().expect("node_nvalue not found").extract()?;
+        self.leaf_kind = dict.get_item("leaf_kind").unwrap().expect("leaf_kind not found").extract()?;
+        self.leaf_param_idx = dict.get_item("leaf_param_idx").unwrap().expect("leaf_param_idx not found").extract()?;
+        self.linear_intercept = dict.get_item("linear_intercept").unwrap().expect("linear_intercept not found").extract()?;
+        self.linear_slope = dict.get_item("linear_slope").unwrap().expect("linear_slope not found").extract()?;
+        self.linear_var = dict.get_item("linear_var").unwrap().expect("linear_var not found").extract()?;
         Ok(())
     } 
 
@@ -167,7 +200,7 @@ impl TreeArrays {
     }
 
     /// Split a leaf node into an internal node with two new child leaves.
-    pub fn split_node(&mut self, leaf_idx: usize, split_var: u32, split_val: f64, left_val: &[f64], right_val: &[f64]) {
+    pub fn split_node(&mut self, leaf_idx: usize, split_var: u32, split_val: f64, leaf_proposal: LeafProposal) {
         let left_child = 2 * leaf_idx + 1;
         let right_child = 2 * leaf_idx + 2;
 
@@ -186,6 +219,8 @@ impl TreeArrays {
             for _ in 0..self.n_outputs {
                 self.leaf_val.push(0.0);
             }
+            self.leaf_kind.push(LeafKind::Gaussian.as_u8());
+            self.leaf_param_idx.push(LEAF_PARAM_NONE);
         }
 
         // Convert leaf to internal node
@@ -199,18 +234,11 @@ impl TreeArrays {
         // Set left child as leaf
         self.split_var[left_child] = LEAF_SENTINEL;
         self.split_val[left_child] = f64::NAN;
-        for o in 0..self.n_outputs {
-            let dst = left_child * self.n_outputs + o;
-            self.leaf_val[dst] = left_val.get(o).copied().unwrap_or(0.0);
-        }
+        self.apply_leaf_payload(left_child, leaf_proposal.left);
 
-        // Set right child as leaf
         self.split_var[right_child] = LEAF_SENTINEL;
         self.split_val[right_child] = f64::NAN;
-        for o in 0..self.n_outputs {
-            let dst = right_child * self.n_outputs + o;
-            self.leaf_val[dst] = right_val.get(o).copied().unwrap_or(0.0);
-        }
+        self.apply_leaf_payload(right_child, leaf_proposal.right);
 
         self.size = self.size.max(right_child + 1);
     }
@@ -249,17 +277,14 @@ impl TreeArrays {
     }
 
     /// Multi-output prediction into a pre-allocated buffer with shape (n_outputs, n_samples).
-    pub fn predict_training_into_multi(&self, out: &mut Array<f64, Ix2>) {
+    pub fn predict_training_into_multi(&self, out: &mut Array<f64, Ix2>, x_data: Option<ArrayView2<f64>>) {
         let n_outputs = out.nrows();
         let n_samples = out.ncols();
         debug_assert_eq!(n_samples, self.leaf_indices.len());
 
         for sample_idx in 0..n_samples {
             let leaf_idx = self.leaf_indices[sample_idx] as usize;
-            for out_idx in 0..n_outputs {
-                let val = self.leaf_val[leaf_idx * self.n_outputs + out_idx];
-                out[[out_idx, sample_idx]] = val;
-            }
+            self.fill_training_leaf_value(leaf_idx, sample_idx, n_outputs, x_data, out);
         }
     }
 
@@ -275,10 +300,7 @@ impl TreeArrays {
 
 
             if self.is_leaf(node_idx) {
-                for out_idx in 0..self.n_outputs { 
-                    let mut row = predictions.row_mut(out_idx);
-                    row += &(weights.clone()*self.leaf_val[node_idx*self.n_outputs + out_idx]);
-                }
+                self.add_leaf_prediction(node_idx, &weights, data, &mut predictions);
             } else { 
                 
                 let sv = self.split_var[node_idx] as usize; // split var
@@ -313,6 +335,97 @@ impl TreeArrays {
 
         predictions 
     }       
+
+    fn apply_leaf_payload(&mut self, node_idx: usize, payload: LeafPayload) {
+        match payload {
+            LeafPayload::Gaussian { value } => {
+                self.leaf_kind[node_idx] = LeafKind::Gaussian.as_u8();
+                self.leaf_param_idx[node_idx] = LEAF_PARAM_NONE;
+                for o in 0..self.n_outputs {
+                    let dst = node_idx * self.n_outputs + o;
+                    self.leaf_val[dst] = value.get(o).copied().unwrap_or(0.0);
+                }
+            }
+            LeafPayload::Linear { intercept, slope, var } => {
+                let idx = self.linear_intercept.len();
+                self.linear_intercept.push(intercept);
+                self.linear_slope.push(slope);
+                self.linear_var.push(var);
+                self.leaf_kind[node_idx] = LeafKind::Linear.as_u8();
+                self.leaf_param_idx[node_idx] = idx;
+                for o in 0..self.n_outputs {
+                    let dst = node_idx * self.n_outputs + o;
+                    self.leaf_val[dst] = f64::NAN;
+                }
+            }
+        }
+    }
+
+    fn add_leaf_prediction(
+        &self,
+        node_idx: usize,
+        weights: &Array1<f64>,
+        data: &Array<f64, Ix2>,
+        predictions: &mut Array2<f64>,
+    ) {
+        match LeafKind::from_u8(self.leaf_kind[node_idx]) {
+            LeafKind::Gaussian => {
+                for out_idx in 0..self.n_outputs {
+                    let mut row = predictions.row_mut(out_idx);
+                    row += &(weights.clone() * self.leaf_val[node_idx * self.n_outputs + out_idx]);
+                }
+            }
+            LeafKind::Linear => {
+                let param_idx = self.leaf_param_idx[node_idx];
+                if param_idx == LEAF_PARAM_NONE {
+                    return;
+                }
+                let var = self.linear_var[param_idx] as usize;
+                for out_idx in 0..self.n_outputs {
+                    let mut row = predictions.row_mut(out_idx);
+                    let intercept = self.linear_intercept[param_idx].get(out_idx).copied().unwrap_or(0.0);
+                    let slope = self.linear_slope[param_idx].get(out_idx).copied().unwrap_or(0.0);
+                    let mut contrib = data.column(var).to_owned();
+                    contrib.mapv_inplace(|x| intercept + slope * x);
+                    row += &(weights.clone() * contrib);
+                }
+            }
+        }
+    }
+
+    fn fill_training_leaf_value(
+        &self,
+        leaf_idx: usize,
+        sample_idx: usize,
+        n_outputs: usize,
+        x_data: Option<ArrayView2<f64>>,
+        out: &mut Array<f64, Ix2>,
+    ) {
+        match LeafKind::from_u8(self.leaf_kind[leaf_idx]) {
+            LeafKind::Gaussian => {
+                for out_idx in 0..n_outputs {
+                    let val = self.leaf_val[leaf_idx * self.n_outputs + out_idx];
+                    out[[out_idx, sample_idx]] = val;
+                }
+            }
+            LeafKind::Linear => {
+                let Some(x_data) = x_data else {
+                    return;
+                };
+                let param_idx = self.leaf_param_idx[leaf_idx];
+                if param_idx == LEAF_PARAM_NONE {
+                    return;
+                }
+                let var = self.linear_var[param_idx] as usize;
+                let x = x_data[[sample_idx, var]];
+                for out_idx in 0..n_outputs {
+                    let intercept = self.linear_intercept[param_idx].get(out_idx).copied().unwrap_or(0.0);
+                    let slope = self.linear_slope[param_idx].get(out_idx).copied().unwrap_or(0.0);
+                    out[[out_idx, sample_idx]] = intercept + slope * x;
+                }
+            }
+        }
+    }
 }
 
 /// Calculate maximum number of nodes for a given depth.
@@ -338,7 +451,18 @@ mod tests {
     #[test]
     fn test_split_node_creates_children() {
         let mut tree = TreeArrays::new(0.0, 5, 5, 1);
-        tree.split_node(0, 0, 2.5, &[ -1.0 ], &[ 1.0 ]);
+        tree.split_node(
+            0,
+            0,
+            2.5,
+            LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 2.5,
+                left: LeafPayload::Gaussian { value: vec![-1.0] },
+                right: LeafPayload::Gaussian { value: vec![1.0] },
+            },
+        );
 
         assert!(!tree.is_leaf(0));
         assert!(tree.is_leaf(1));
@@ -380,7 +504,18 @@ mod tests {
     fn test_get_leaf_samples() {
         let mut tree = TreeArrays::new(0.0, 4, 5, 1);
         // Manually assign samples to different leaves
-        tree.split_node(0, 0, 0.5, &[-1.0], &[1.0]);
+        tree.split_node(
+            0,
+            0,
+            0.5,
+            LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 0.5,
+                left: LeafPayload::Gaussian { value: vec![-1.0] },
+                right: LeafPayload::Gaussian { value: vec![1.0] },
+            },
+        );
         tree.leaf_indices = vec![1, 1, 2, 2]; // samples 0,1 -> left; 2,3 -> right
 
         let left_samples: Vec<usize> = tree.get_leaf_samples(1).collect();
@@ -394,8 +529,30 @@ mod tests {
     #[should_panic(expected = "Tree mutation would exceed maximum capacity")]
     fn test_split_beyond_max_depth_panics() {
         let mut tree = TreeArrays::new(0.0, 1, 1, 1); // max_depth=1, max_nodes=3
-        tree.split_node(0, 0, 0.5, &[-1.0], &[1.0]); // OK: creates nodes 1,2
-        tree.split_node(1, 0, 0.3, &[-2.0], &[2.0]); // Panic: would need nodes 3,4 but max=3
+        tree.split_node(
+            0,
+            0,
+            0.5,
+            LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 0.5,
+                left: LeafPayload::Gaussian { value: vec![-1.0] },
+                right: LeafPayload::Gaussian { value: vec![1.0] },
+            },
+        ); // OK: creates nodes 1,2
+        tree.split_node(
+            1,
+            0,
+            0.3,
+            LeafProposal {
+                node_idx: 1,
+                split_var: 0,
+                split_val: 0.3,
+                left: LeafPayload::Gaussian { value: vec![-2.0] },
+                right: LeafPayload::Gaussian { value: vec![2.0] },
+            },
+        ); // Panic: would need nodes 3,4 but max=3
     }
 
     #[test]
@@ -404,7 +561,18 @@ mod tests {
         // root leaf has two outputs both init 0.0
         assert_eq!(tree.leaf_val.len(), 2);
         // split root, set left=[1,2], right=[3,4]
-        tree.split_node(0, 0, 0.5, &[1.0, 2.0], &[3.0, 4.0]);
+        tree.split_node(
+            0,
+            0,
+            0.5,
+            LeafProposal {
+                node_idx: 0,
+                split_var: 0,
+                split_val: 0.5,
+                left: LeafPayload::Gaussian { value: vec![1.0, 2.0] },
+                right: LeafPayload::Gaussian { value: vec![3.0, 4.0] },
+            },
+        );
         assert_eq!(tree.leaf_val[1 * 2 + 0], 1.0);
         assert_eq!(tree.leaf_val[1 * 2 + 1], 2.0);
         assert_eq!(tree.leaf_val[2 * 2 + 0], 3.0);

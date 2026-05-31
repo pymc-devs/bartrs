@@ -177,6 +177,7 @@ impl PySampler {
             },
             batch_tune: settings.batch_tune,
             batch_post: settings.batch_post,
+            response: settings.response_rule,
         };
 
         let data = OwnedData::new(x_data, y_data);

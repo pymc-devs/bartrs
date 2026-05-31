@@ -15,6 +15,7 @@ use crate::splitting::SplitRules;
 use crate::tree::TreeArrays;
 use crate::update::{MutationDecision, TreeProposal};
 use crate::weight::WeightFn;
+use crate::response::{LeafProposal, ResponseStrategy};
 
 /// Diagnostics from a single SMC tree step.
 pub struct SmcStepInfo {
@@ -33,6 +34,7 @@ pub fn smc_step<R, W>(
     weight_fn: &W,
     current_tree: TreeArrays,
     leaf_sd: &Array1<f64>,
+    response: &dyn ResponseStrategy,
 ) -> (TreeArrays, SmcStepInfo)
 where
     R: ResamplingStrategy,
@@ -44,10 +46,7 @@ where
     let mut particles: Vec<Particle> = (0..config.n_particles)
         .map(|i| {
             if i == 0 {
-                // Particle::new_reference(init_leaf_value, n_samples, config.max_depth, config.n_outputs)
-
                 Particle::from_reference(current_tree.clone(), n_samples, current_tree.max_depth)
-
             } else {
                 Particle::new(init_leaf_value, n_samples, config.max_depth, config.n_outputs)
             }
@@ -61,7 +60,7 @@ where
 
     let mut sum_trees_noi = Array::zeros((config.n_outputs, n_samples));
     let mut current_tree_pred = Array::zeros((config.n_outputs, n_samples));
-    current_tree.predict_training_into_multi(&mut current_tree_pred);
+    current_tree.predict_training_into_multi(&mut current_tree_pred, Some(data.x));
     sum_trees_noi.assign(sum_trees);
     sum_trees_noi -= &current_tree_pred;
 
@@ -85,6 +84,7 @@ where
                     data,
                     split_rules,
                     leaf_sd,
+                    response,
                 ) {
                     MutationDecision::Accept(proposal) => {
                         particle.pop_next_expandable();
@@ -102,7 +102,7 @@ where
         for (i, particle) in particles[1..].iter_mut().enumerate() {
             if mutated[i] {
                 predictions_buf.fill(0.0);
-                particle.tree.predict_training_into_multi(&mut predictions_buf);
+                particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
                 predictions_buf += &sum_trees_noi;
                 let flat: Vec<f64> = predictions_buf.iter().copied().collect();
                 particle.log_weight = weight_fn.log_weight(&flat);
@@ -123,7 +123,7 @@ where
     let mut log_weights = vec![0.0f64; config.n_particles];
     for (i, particle) in particles.iter().enumerate() {
         predictions_buf.fill(0.0);
-        particle.tree.predict_training_into_multi(&mut predictions_buf);
+        particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
         predictions_buf += &sum_trees_noi;
         let flat: Vec<f64> = predictions_buf.iter().copied().collect();
         log_weights[i] = weight_fn.log_weight(&flat);
@@ -164,6 +164,7 @@ fn propose_mutation(
     data: &DataView,
     split_rules: &[SplitRules],
     leaf_sd: &Array1<f64>,
+    response: &dyn ResponseStrategy,
 ) -> MutationDecision {
     let depth = particle.tree.get_depth(node_idx);
     if depth == 0 {
@@ -197,7 +198,7 @@ fn propose_mutation(
         None => return MutationDecision::Reject,
     };
 
-    let (left_value, right_value) = propose_leaf_values(
+    let leaf_proposal = propose_leaf_values(
         rng,
         &node_samples,
         &col,
@@ -205,15 +206,15 @@ fn propose_mutation(
         sum_trees,
         config,
         leaf_sd,
+        response,
+        split_var as u32,
+        node_idx,
     );
 
     MutationDecision::Accept(TreeProposal {
-        node_idx,
-        split_var: split_var as u32,
-        split_val,
-        left_value,
-        right_value,
+        leaf_proposal,
     })
+    
 }
 
 fn propose_leaf_values(
@@ -224,53 +225,25 @@ fn propose_leaf_values(
     sum_trees: &Array<f64, Ix2>,
     config: &BartConfig,
     leaf_sd: &Array1<f64>,
-) -> (Vec<f64>, Vec<f64>) {
+    response: &dyn ResponseStrategy,
+    split_var: u32,
+    node_idx: usize,
+) -> LeafProposal {
     let n_outputs = config.n_outputs;
+    let n_trees = config.n_trees;
 
-    // Initialize accumulators per output
-    let mut left_sum = vec![0.0f64; n_outputs];
-    let mut left_n = vec![0usize; n_outputs];
-    let mut right_sum = vec![0.0f64; n_outputs];
-    let mut right_n = vec![0usize; n_outputs];
-
-    for &s in node_samples.iter() {
-        let idx = s as usize;
-        let v = unsafe { *col.uget(idx) };
-        for o in 0..n_outputs {
-            let p = unsafe { *sum_trees.uget([o, idx]) };
-            if v <= split_val {
-                left_sum[o] += p;
-                left_n[o] += 1;
-            } else {
-                right_sum[o] += p;
-                right_n[o] += 1;
-            }
-        }
-    }
-
-    let dist = Normal::new(0.0, 1.0).unwrap();
-
-    let mut left_value = vec![0.0f64; n_outputs];
-    let mut right_value = vec![0.0f64; n_outputs];
-
-    for o in 0..n_outputs {
-        let noise = dist.sample(rng) * leaf_sd[o]; // * config.sigma;
-        left_value[o] = if left_n[o] == 0 {
-            noise
-        } else {
-            left_sum[o] / left_n[o] as f64 / config.n_trees as f64 + noise
-        };
-
-
-        let noise_r = dist.sample(rng) * leaf_sd[o]; // *config.sigma;
-        right_value[o] = if right_n[o] == 0 {
-            noise_r
-        } else {
-            right_sum[o] / right_n[o] as f64 / config.n_trees as f64 + noise_r
-        };
-    }
-
-    (left_value, right_value)
+    response.sample_leaf_proposal(
+        rng,
+        node_samples,
+        col,
+        sum_trees,
+        leaf_sd,
+        n_trees,
+        n_outputs,
+        split_val,
+        split_var,
+        node_idx,
+    )
 }
 
 #[inline]

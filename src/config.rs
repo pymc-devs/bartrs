@@ -17,6 +17,7 @@ pub struct BartConfig {
     pub batch_post: f64,
     /// Number of outputs for multi-output targets.
     pub n_outputs: usize,
+    pub response: String,
 }
 
 impl Default for BartConfig {
@@ -33,6 +34,7 @@ impl Default for BartConfig {
             batch_tune: 0.1,
             batch_post: 0.1,
             n_outputs: 1,
+            response: "gaussian".to_string(),
         }
     }
 }
