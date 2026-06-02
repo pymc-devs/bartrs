@@ -4,7 +4,6 @@ use std::sync::Arc;
 use numpy::ndarray::ArrayView2;
 
 use crate::tree::{TreeArrays, max_nodes_for_depth};
-use crate::response::{LeafPayload, LeafProposal};
 use crate::update::TreeProposal;
 
 /// Flat CSR-style mapping from leaf node index to sample indices.

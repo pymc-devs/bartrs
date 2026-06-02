@@ -27,8 +27,8 @@ from pymc.step_methods.compound import Competence
 from pytensor.graph.basic import Variable
 
 from pymc_bart.bart import BARTRV
-from pymc_bartrs.compile_pymc import CompiledPyMCModel
-from pymc_bartrs.pymc_bartrs import PyBartSettings, PySampler
+from bartrs.compile_pymc import CompiledPyMCModel
+from bartrs.bartrs import PyBartSettings, PySampler
 from pymc_bart.utils import _encode_vi
 
 
@@ -67,6 +67,8 @@ class PGBART(ArrayStepShared):
         model: Optional[Model] = None,
         initial_point: PointType | None = None,
         compile_kwargs: dict | None = None,  # pylint: disable=unused-argument
+        blocked = None,
+        rng: np.random.Generator = np.random.Generator(np.random.PCG64())
     ):
         model = modelcontext(model)
         if initial_point is None:
@@ -125,8 +127,6 @@ class PGBART(ArrayStepShared):
             self.leaf_sd *= 3 / self.m**0.5
         else:
             self.leaf_sd *= self.bart.Y.std() / self.m**0.5
-
-        init_leaf_value = np.mean(self.bart.Y) / self.bart.m
 
         # Compile the PyMC model to create a C callback. This function pointer is
         # passed to Rust and called using Rust's foreign function interface (FFI)

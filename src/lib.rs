@@ -24,12 +24,14 @@ use crate::weight::PyMCWeightFn;
 
 use numpy::{
     PyReadonlyArray, PyReadonlyArrayDyn, PyArray2, PyUntypedArrayMethods,
-    ndarray::{Array1, Array2, Ix2},
+    ndarray::{Array1, Array2, ArrayView1, ArrayViewMut1, Ix2},
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use rand_distr::StandardNormal;
 
 type LogpFunc = unsafe extern "C" fn(*const f64, usize) -> c_double;
 
@@ -124,7 +126,7 @@ impl PySampler {
         model: usize,
         settings: PyBartSettings,
     ) -> PyResult<PySampler> {
-        let x_data = x.as_array().to_owned();
+        let mut x_data = x.as_array().to_owned();
         // Accept either 1D or 2D `y`. If 1D, reshape to (1, n_samples).
         let y_array = match y.ndim() {
             1 => {
@@ -161,6 +163,16 @@ impl PySampler {
             split_rules
         };
 
+        let mut rng = SmallRng::seed_from_u64(settings.seed);
+
+        for (idx, rule) in split_rules.iter().enumerate() {
+            if matches!(rule, SplitRules::Continuous(_)) {
+                let std = nanstd(x_data.column(idx));
+                let col = x_data.column_mut(idx);
+                jitter_duplicated(col, std, &mut rng);
+            }
+        }
+
         let config = BartConfig {
             n_trees: settings.n_trees,
             n_particles: settings.n_particles,
@@ -181,7 +193,7 @@ impl PySampler {
         };
 
         let data = OwnedData::new(x_data, y_data);
-
+        
         let kernel = BartKernel {
             split_rules,
             resampling: SystematicResampling,
@@ -190,7 +202,6 @@ impl PySampler {
             data,
         };
 
-        let mut rng = SmallRng::seed_from_u64(settings.seed);
         let state = SamplingAlgorithm::init(&kernel, &mut rng);
 
         Ok(PySampler {
@@ -234,9 +245,62 @@ impl PySampler {
 }
 
 #[pymodule]
-fn pymc_bartrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn bartrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBartSettings>()?;
     m.add_class::<PySampler>()?;
     m.add_class::<TreeArrays>()?;
     Ok(())
+}
+
+fn jitter_duplicated(mut col: ArrayViewMut1<'_, f64>, std: f64, rng: &mut impl Rng) {
+    if !are_whole_number(col.view()) {
+        return;
+    }
+
+    let mut seen: Vec<f64> = Vec::new();
+    let scale = std / 12.0;
+    for value in col.iter_mut() {
+        let num = *value;
+        if seen.contains(&num) && !num.is_nan() {
+            let z: f64 = rng.sample(StandardNormal);
+            *value = num + scale * z;
+        } else {
+            seen.push(num);
+        }
+    }
+}
+
+fn are_whole_number(col: ArrayView1<'_, f64>) -> bool {
+    for &value in col.iter() {
+        if value.is_nan() {
+            continue;
+        }
+        if value % 1.0 != 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn nanstd(col: ArrayView1<'_, f64>) -> f64 {
+    let mut count = 0usize;
+    let mut mean = 0.0f64;
+    let mut m2 = 0.0f64;
+
+    for &value in col.iter() {
+        if value.is_nan() {
+            continue;
+        }
+        count += 1;
+        let delta = value - mean;
+        mean += delta / count as f64;
+        let delta2 = value - mean;
+        m2 += delta * delta2;
+    }
+
+    if count == 0 {
+        return f64::NAN;
+    }
+
+    (m2 / count as f64).sqrt()
 }

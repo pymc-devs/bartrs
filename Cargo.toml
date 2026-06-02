@@ -13,12 +13,12 @@
 #   limitations under the License.
 
 [package]
-name = "pymc_bartrs"
+name = "bartrs"
 version = "0.2.0"
 edition = "2024"
 
 [lib]
-name = "pymc_bartrs"
+name = "bartrs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

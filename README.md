@@ -1,6 +1,6 @@
-# PyMC-BART-rs
+# BART-rs
 
-High-performance Rust implementation of [PyMC-BART](https://github.com/pymc-devs/pymc-bart). This implementation provides an optimized Particle Gibbs BART (PGBART) sampler designed for performance and extensibility.
+A high-performance Rust implementation of an optimized Particle Gibbs BART (PGBART) sampler designed for performance and extensibility.
 
 ## Table of Contents
 
@@ -30,3 +30,15 @@ with pm.Model() as model:
     ...
     idata = pm.sample()
 ```
+
+## Modifications
+
+Issue (optional).
+
+Clone the repository.
+
+Fork.
+
+Edit. 
+
+Merge request.

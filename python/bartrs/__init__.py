@@ -1,8 +1,8 @@
 from pymc.sampling import mcmc
 
 
-from pymc_bartrs.compile_pymc import CompiledPyMCModel
-from pymc_bartrs.pgbart import PGBART
+from bartrs.compile_pymc import CompiledPyMCModel
+from bartrs.pgbart import PGBART
 
 __all__ = [
     "PGBART",

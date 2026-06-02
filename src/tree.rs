@@ -10,7 +10,7 @@ use crate::response::{LeafKind, LeafPayload, LeafProposal};
 // 3. CURRENT: logp for samples that only affect the tree
 // 4. monotonic response
 // 5. Hawks example with separate BARTRVs
-// 6. Reseaaaaarchff
+// 6. Reseaaaaarch
 
 
 /// Bartz-style heap-indexed tree with separate internal/leaf arrays.
@@ -144,7 +144,8 @@ impl TreeArrays {
         Ok((cls.into(), args, state))
     }
 
-    pub fn predict<'py>(&self, x: PyReadonlyArray2<'py, f64>, py: Python<'py>, excluded: Option<&Bound<'py, PyList>>, shape: usize) -> PyResult<Py<PyArray2<f64>>> {
+
+    pub fn predict<'py>(&self, x: PyReadonlyArray2<'py, f64>, py: Python<'py>, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray2<f64>>> {
         let data = x.as_array().to_owned();
         let excl = match excluded {
             Some(list) => list.iter()

@@ -174,7 +174,6 @@ where
                 .unwrap_or(0);
             tree_depths.push(depth);
 
-            // This is sort of ugly. Clean this maybe?
             for sv in new_tree.split_var.iter().take(new_tree.size) {
                 if *sv != LEAF_SENTINEL && !state.tune {
                     variable_inclusion[*sv as usize] += 1;

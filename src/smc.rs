@@ -5,7 +5,7 @@ use std::sync::Arc;
 use numpy::ndarray::{Array, ArrayView1, Array1, Ix2};
 use rand::Rng;
 use rand::distr::weighted::WeightedIndex;
-use rand_distr::{Distribution, Normal};
+use rand_distr::{Distribution};
 
 use crate::config::BartConfig;
 use crate::data::DataView;
