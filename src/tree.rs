@@ -437,7 +437,6 @@ pub fn max_nodes_for_depth(depth: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use numpy::ndarray::{Array1, Array2};
 
     #[test]
     fn test_new_tree_is_single_leaf() {

@@ -197,6 +197,7 @@ impl Particle {
 
 #[cfg(test)]
 mod tests {
+    use crate::response::{LeafProposal, LeafPayload};
     use super::*;
     use numpy::ndarray::Array2;
 

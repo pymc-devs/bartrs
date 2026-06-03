@@ -385,7 +385,7 @@ mod tests {
         };
 
         let a = intercept;
-        let b = slope;
+        let _b = slope;
         assert!((a - 0.0).abs() < 1e-6, "Expected intercept ~0.0, got {}", a);
     }
 
@@ -401,8 +401,7 @@ mod tests {
             panic!("Got None when was expecting intercept and slope");
         };
 
-        let a = intercept;
-
+        let _a = intercept;
         let b = slope;
         assert!((b - 2.0).abs() < 1e-6, "Expected intercept ~2.0, got {}", b);
 

@@ -1,44 +1,15 @@
-# BART-rs
+# bart-rs
 
-A high-performance Rust implementation of an optimized Particle Gibbs BART (PGBART) sampler designed for performance and extensibility.
+A high-performance Rust implementation of an optimized Particle Gibbs BART (PGBART) sampler. This is the sampler used by ```pymc-bart```.
 
 ## Table of Contents
 
 - [Installation](#installation)
-- [Usage](#usage)
-- [Modifications](#modifications)
 
 ## Installation
 
-PyMC-BART is available on PyPI with pre-built wheels for Linux (x86_64, aarch64), Windows (x64), and macOS (x86_64, aarch64). To install using `pip`
+bart-rs is available on PyPI with a pre-built wheels for Linux, MacOS and Windows.
 
 ```bash
-pip install pymc-bart-rs
+pip install bartrs
 ```
-
-## Usage
-
-Get started by using PyMC-BART to set up a BART model
-
-```python
-import pymc as pm
-import pymc_bartrs as pmb
-
-X, y = ... # Your data replaces "..."
-with pm.Model() as model:
-    bart = pmb.BART('bart', X, y)
-    ...
-    idata = pm.sample()
-```
-
-## Modifications
-
-Issue (optional).
-
-Clone the repository.
-
-Fork.
-
-Edit. 
-
-Merge request.
