@@ -149,45 +149,14 @@ jobs:
           name: sdist
           path: dist
 
-  release:
-    name: Release
+  package:
+    name: Build & inspect package
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
-    needs: [linux, windows, macos, sdist]
-    # Combine all the wheels and sdists into a single directory
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          name: linux-x86_64-wheels
-          path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: linux-aarch64-wheels
-          path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-x64-wheels
-          path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-x86_64-wheels
-          path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-aarch64-wheels
-          path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: sdist
-          path: dist
-      - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        with:
-          command: upload
-          args: --skip-existing dist/*
+          persist-credentials: false
+      - uses: hynek/build-and-inspect-python-package@d44ca7d91762de7a7d5436ddae667c6da6d1c3df # v2.18.0
 
   test:
     runs-on: ubuntu-latest
