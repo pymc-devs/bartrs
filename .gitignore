@@ -1,0 +1,27 @@
+# Rust
+/target/
+
+# Python build artifacts
+/dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Compiled extension modules
+*.so
+*.pyd
+*.dll
+
+# Virtual environments
+.venv/
+venv/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
