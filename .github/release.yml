@@ -1,0 +1,22 @@
+# Config for GitHub's auto-generated release notes.
+changelog:
+  exclude:
+    labels:
+      - no releasenotes
+  categories:
+    - title: Major Changes 🛠
+      labels:
+        - major
+    - title: New Features 🎉
+      labels:
+        - enhancements
+        - feature request
+    - title: Bugfixes 🪲
+      labels:
+        - bug
+    - title: Documentation 📖
+      labels:
+        - docs
+    - title: Maintenance 🔧
+      labels:
+        - "*"
