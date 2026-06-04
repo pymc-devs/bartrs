@@ -19,7 +19,7 @@ use crate::response::{LeafKind, LeafPayload, LeafProposal};
 /// Internal nodes store split variable and threshold. Leaf nodes store
 /// predicted values. The `leaf_indices` vector maps each training sample
 /// to its assigned leaf node.
-#[pyclass(module = "pymc_bart.pymc_bart", get_all)]
+#[pyclass(module = "bartrs.bartrs", get_all)]
 #[derive(Clone, Debug)]
 pub struct TreeArrays {
     /// Split variable per node (u32::MAX = leaf sentinel)
