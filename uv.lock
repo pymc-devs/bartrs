@@ -1,4 +1,4 @@
-version = 1
+version = 0.3.0
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version < '3.14'",
