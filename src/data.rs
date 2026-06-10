@@ -67,3 +67,20 @@ impl OwnedData {
     }
     
 }
+
+
+pub trait NotNan {
+    fn is_valid(&self) -> bool;
+}
+
+impl NotNan for f64 {
+    fn is_valid(&self) -> bool {
+        !self.is_nan()
+    }
+}
+
+impl NotNan for i32 {
+    fn is_valid(&self) -> bool {
+        true
+    }
+}

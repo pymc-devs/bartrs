@@ -4,14 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::response::{LeafKind, LeafPayload, LeafProposal};
-
-// 1. DONE: remove pgbart.py from pymc-bart and use this sampler
-// 2. DONE: linear terms 
-// 3. CURRENT: logp for samples that only affect the tree
-// 4. monotonic response
-// 5. Hawks example with separate BARTRVs
-// 6. Reseaaaaarch
-
+use crate::data::NotNan;
 
 /// Bartz-style heap-indexed tree with separate internal/leaf arrays.
 ///
@@ -387,7 +380,13 @@ impl TreeArrays {
                     let intercept = self.linear_intercept[param_idx].get(out_idx).copied().unwrap_or(0.0);
                     let slope = self.linear_slope[param_idx].get(out_idx).copied().unwrap_or(0.0);
                     let mut contrib = data.column(var).to_owned();
-                    contrib.mapv_inplace(|x| intercept + slope * x);
+                    contrib.mapv_inplace(|x| {
+                        if x.is_valid() {
+                            intercept + slope * x
+                        } else {
+                            0.0
+                        }
+                    });
                     row += &(weights.clone() * contrib);
                 }
             }
@@ -422,7 +421,11 @@ impl TreeArrays {
                 for out_idx in 0..n_outputs {
                     let intercept = self.linear_intercept[param_idx].get(out_idx).copied().unwrap_or(0.0);
                     let slope = self.linear_slope[param_idx].get(out_idx).copied().unwrap_or(0.0);
-                    out[[out_idx, sample_idx]] = intercept + slope * x;
+                    out[[out_idx, sample_idx]] = if x.is_nan() {
+                        intercept
+                    } else {
+                        intercept + slope * x
+                    };
                 }
             }
         }
