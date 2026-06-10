@@ -113,7 +113,7 @@ impl SplitRule for OneHotSplit {
     where
         I: Iterator<Item = usize>,
     {
-        data_indices.partition(|&idx| (data[[idx, feature_idx]] as i32) == threshold)
+        data_indices.partition(|&idx| (data[[idx, feature_idx]] as i32) <= threshold)
     }
 }
 
@@ -168,5 +168,131 @@ impl SplitRules {
                 rule.split_data_indices(data, feature_idx, threshold as i32, data_indices)
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use numpy::ndarray::array;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    fn assert_partition_consistent(
+        data: &Array<f64, Ix2>,
+        feature_idx: usize,
+        threshold: f64,
+        left: &[usize],
+        right: &[usize],
+    ) {
+        assert_eq!(left.len() + right.len(), data.nrows());
+
+        for &idx in left {
+            assert!(data[[idx, feature_idx]] <= threshold);
+        }
+
+        for &idx in right {
+            assert!(data[[idx, feature_idx]] > threshold);
+        }
+    }
+
+    #[test]
+    fn test_continuous_split_rule() {
+        let rule = ContinuousSplit;
+
+        let mut rng = StdRng::seed_from_u64(42);
+        assert_eq!(rule.sample_split_value(&mut rng, vec![0.0].into_iter()), None);
+
+        let available_values: Vec<f64> = (0..10).map(|x| x as f64).collect();
+        let sv = rule
+            .sample_split_value(&mut rng, available_values.clone().into_iter())
+            .expect("expected a split value");
+
+        let data = array![[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0], [9.0]];
+
+        let (left, right) = rule.split_data_indices(&data, 0, sv, 0..data.nrows());
+
+        assert_partition_consistent(&data, 0, sv, &left, &right);
+
+        let (left_repeated, right_repeated) = rule.split_data_indices(&data, 0, sv, 0..data.nrows());
+        assert_eq!(left, left_repeated);
+        assert_eq!(right, right_repeated);
+
+        let probs = (0..10_000)
+            .map(|_| {
+                let split_value = rule
+                    .sample_split_value(&mut rng, available_values.clone().into_iter())
+                    .unwrap();
+                let (left, _) = rule.split_data_indices(&data, 0, split_value, 0..data.nrows());
+                let mut mask = vec![false; data.nrows()];
+                for idx in left {
+                    mask[idx] = true;
+                }
+                mask
+            })
+            .fold(vec![0usize; data.nrows()], |mut acc, mask| {
+                for (i, b) in mask.into_iter().enumerate() {
+                    if b {
+                        acc[i] += 1;
+                    }
+                }
+                acc
+            })
+            .into_iter()
+            .map(|count| count as f64 / 10_000.0)
+            .collect::<Vec<_>>();
+
+        assert!(probs.iter().filter(|&&p| p > 0.01).count() >= data.nrows() - 1);
+        assert!(probs.iter().filter(|&&p| p < 0.99).count() >= data.nrows() - 1);
+    }
+
+    #[test]
+    fn test_one_hot_split_rule() {
+        let rule = OneHotSplit;
+
+        let mut rng = StdRng::seed_from_u64(42);
+        assert_eq!(rule.sample_split_value(&mut rng, vec![0].into_iter()), None);
+
+        let available_values: Vec<i32> = (0..10).collect();
+        let sv = rule
+            .sample_split_value(&mut rng, available_values.clone().into_iter())
+            .expect("expected a split value");
+
+        let data = array![[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0], [9.0]];
+
+        let (left, right) = rule.split_data_indices(&data, 0, sv, 0..data.nrows());
+
+        assert_partition_consistent(&data, 0, sv as f64, &left, &right);
+
+        let (left_repeated, right_repeated) = rule.split_data_indices(&data, 0, sv, 0..data.nrows());
+        assert_eq!(left, left_repeated);
+        assert_eq!(right, right_repeated);
+
+        let probs = (0..10_000)
+            .map(|_| {
+                let split_value = rule
+                    .sample_split_value(&mut rng, available_values.clone().into_iter())
+                    .unwrap();
+                let (left, _) = rule.split_data_indices(&data, 0, split_value, 0..data.nrows());
+                let mut mask = vec![false; data.nrows()];
+                for idx in left {
+                    mask[idx] = true;
+                }
+                mask
+            })
+            .fold(vec![0usize; data.nrows()], |mut acc, mask| {
+                for (i, b) in mask.into_iter().enumerate() {
+                    if b {
+                        acc[i] += 1;
+                    }
+                }
+                acc
+            })
+            .into_iter()
+            .map(|count| count as f64 / 10_000.0)
+            .collect::<Vec<_>>();
+
+        assert!(probs.iter().filter(|&&p| p > 0.01).count() >= data.nrows() - 1);
+        assert!(probs.iter().filter(|&&p| p < 0.99).count() >= data.nrows() - 1);
     }
 }

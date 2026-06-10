@@ -130,3 +130,25 @@ impl ResamplingStrategy for ResamplingStrategies {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests { 
+    use super::*;
+
+    #[test]
+    fn test_systematic_resample() {
+        let mut weights = &[0.0, 0.25, 0.75];
+        let mut rng = rand::rng();
+        let mut out = Vec::new();
+
+        ResamplingStrategies::Systematic(SystematicResampling).resample_into(&mut rng, weights, &mut out);
+        assert!(out.iter().all( |&index| index >= 1 && index < weights.len()));
+
+        weights = &[0.5, 0.3, 0.2];
+        out = Vec::new();
+        ResamplingStrategies::Systematic(SystematicResampling).resample_into(&mut rng, weights, &mut out);
+        assert!(out.iter().all( |&index| index >= 0 as usize && index < weights.len()));
+    }
+
+}

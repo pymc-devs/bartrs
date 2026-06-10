@@ -8,7 +8,7 @@ use rand::distr::weighted::WeightedIndex;
 use rand_distr::{Distribution};
 
 use crate::config::BartConfig;
-use crate::data::DataView;
+use crate::data::{DataView, NotNan};
 use crate::particle::{Particle};
 use crate::resampling::ResamplingStrategy;
 use crate::splitting::SplitRules;
@@ -95,7 +95,7 @@ where
                     MutationDecision::Reject => {
                         particle.pop_next_expandable();
                     }
-                }
+                } 
             }
         }
 
@@ -190,7 +190,9 @@ fn propose_mutation(
     let col = data.x.column(split_var);
     let feature_values = node_samples
         .iter()
-        .map(|&s| unsafe { *col.uget(s as usize) });
+        .map(|&s| unsafe { *col.uget(s as usize) })
+        .filter( |&v| v.is_valid());
+
 
     let split_strategy = &split_rules[split_var];
     let split_val = match split_strategy.sample_split_value(rng, feature_values) {

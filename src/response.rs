@@ -211,6 +211,11 @@ impl ResponseStrategy for LinearStrategy {
         for &s in node_samples {
             let idx = s as usize;
             let v = unsafe { *col.uget(idx) };
+
+            if v.is_nan() {
+                continue;
+            }
+
             if v <= split_val {
                 left_idx.push(idx);
             } else {
@@ -299,7 +304,7 @@ pub enum ResponseStrategies {
 impl ResponseStrategies {
     pub fn from_name(name: &str) -> Result<Self, String> {
         match name.to_lowercase().as_str() {
-            "gaussian" => Ok(ResponseStrategies::Gaussian(GaussianResponseStrategy)),
+            "constant" => Ok(ResponseStrategies::Gaussian(GaussianResponseStrategy)),
             "linear" => Ok(ResponseStrategies::Linear(LinearStrategy)),
             "motr" => Ok(ResponseStrategies::Motr(MotrStrategy)),
             _ => Err(format!(
@@ -372,6 +377,7 @@ impl ResponseStrategy for ResponseStrategies {
 mod tests {
     use super::*;
 
+    // 1d-intercept
     #[test]
     fn test_fit_linear_1d_intercept() {
         let x = &[1.0, 2.0, 3.0, 4.0, 5.0];
@@ -389,6 +395,7 @@ mod tests {
         assert!((a - 0.0).abs() < 1e-6, "Expected intercept ~0.0, got {}", a);
     }
 
+    // 1d-slope
     #[test]
     fn test_fit_linear_1d_slope() {
         let x = &[1.0, 2.0, 3.0, 4.0, 5.0];
@@ -405,6 +412,29 @@ mod tests {
         let b = slope;
         assert!((b - 2.0).abs() < 1e-6, "Expected intercept ~2.0, got {}", b);
 
+    }
+
+
+    // 1d-intercept + slope
+    #[test]
+    fn test_linear_fit() {
+
+        let x = &[1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = &[3.0, 5.0, 7.0, 9.0, 11.0];
+
+        let noise = 0.0f64;
+
+        let n_trees = 1;
+
+        let Some((intercept, slope)) = LinearStrategy::fit_linear_1d(x, y, noise, n_trees) else {
+            panic!("Got None when was expecting intercept and slope");
+        };
+
+        let a = intercept;
+        let b = slope;
+
+        assert!((a - 1.0).abs() < 1e-6, "Expected intercept ~1.0, got {}", a);
+        assert!((b - 2.0).abs() < 1e-6, "Expected slope ~2.0, got {}", b);
     }
     
 }
