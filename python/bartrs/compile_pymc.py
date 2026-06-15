@@ -18,7 +18,7 @@ from pymc.pytensorf import (
     join_nonshared_inputs,
     make_shared_replacements,
 )
-from numba import carray, cfunc, extending, float64, types, njit
+from numba import carray, cfunc, extending, float64, types, njit, int32
 from numba.core import cgutils
 
 
@@ -187,7 +187,7 @@ class CompiledPyMCModel:
         #
         shared = make_shared_replacements(initial_values, value_vars, model)
 
-        out_vars = [model.datalogp]
+        out_vars = [model.datalogp] # shouldn't do it over data
 
         # Join non-shared inputs and prepare for compilation
         # This separates model parameters from shared/observed data
@@ -286,8 +286,9 @@ class CompiledPyMCModel:
         shared_arrays = self.logp_args
 
         code = [
-            "def _logp(ptr, size):",
+            "def _logp(ptr, idx_ptr, size):",
             "    data = carray(ptr, (size, ), dtype=float64)",
+            "    indexes = carray(idx_ptr, (size, ), dtype=int32)", 
         ]
 
         for i, array in enumerate(shared_arrays):
@@ -310,6 +311,7 @@ class CompiledPyMCModel:
 
         sig = types.float64(
             types.CPointer(types.float64),
+            types.CPointer(types.int32),
             types.intc,
         )
         try:

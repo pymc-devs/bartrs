@@ -432,6 +432,51 @@ impl TreeArrays {
     }
 }
 
+impl TreeArrays {
+    pub fn fill_subset_preds(
+        &self,
+        active_indices: &[u32],
+        sum_trees_noi: &Array<f64, Ix2>,
+        x_data: ArrayView2<f64>,
+        out_buf: &mut Vec<f64>,
+    ) {
+        out_buf.clear();
+        
+        for out_idx in 0..self.n_outputs {
+            for &sample_idx_u32 in active_indices {
+                let sample_idx = sample_idx_u32 as usize;
+                
+                let leaf_idx = self.leaf_indices[sample_idx] as usize;
+                
+                let tree_pred = match LeafKind::from_u8(self.leaf_kind[leaf_idx]) {
+                    LeafKind::Gaussian => {
+                        self.leaf_val[leaf_idx * self.n_outputs + out_idx]
+                    }
+                    LeafKind::Linear => {
+                        let param_idx = self.leaf_param_idx[leaf_idx];
+                        if param_idx == LEAF_PARAM_NONE {
+                        } else {
+                            let var = self.linear_var[param_idx] as usize;
+                            let x = x_data[[sample_idx, var]];
+                            let intercept = self.linear_intercept[param_idx].get(out_idx).copied().unwrap_or(0.0);
+                            let slope = self.linear_slope[param_idx].get(out_idx).copied().unwrap_or(0.0);
+                            
+                            if x.is_nan() {
+                                intercept
+                            } else {
+                                intercept + slope * x
+                            }
+                        }
+                    }
+                };
+
+                let noi_pred = sum_trees_noi[[out_idx, sample_idx]];
+                out_buf.push(tree_pred + noi_pred);
+            }
+        }
+    }
+}
+
 /// Calculate maximum number of nodes for a given depth.
 pub fn max_nodes_for_depth(depth: u8) -> usize {
     (1usize << (depth as usize + 1)) - 1
