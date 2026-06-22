@@ -57,66 +57,71 @@ where
     let mut inner_weights = vec![0.0f64; n_non_ref];
     let mut acceptance_count = 0;
 
+
     let mut sum_trees_noi = Array::zeros((config.n_outputs, n_samples));
     let mut current_tree_pred = Array::zeros((config.n_outputs, n_samples));
     current_tree.predict_training_into_multi(&mut current_tree_pred, Some(data.x));
     sum_trees_noi.assign(sum_trees);
     sum_trees_noi -= &current_tree_pred;
+    
+    let storage: Vec<i32> = (0..n_samples as i32).collect();
+    let base_index: &[i32] = &storage;
 
-    let mut subset_preds_buf: Vec<f64> = Vec::with_capacity(config.n_outputs * n_samples);
-    let mut subset_idx_buf: Vec<i32> = Vec::with_capacity(n_samples);
+    let mut predictions_buf = Array::zeros((config.n_outputs, n_samples));
     let mut ancestors_buf: Vec<usize> = Vec::with_capacity(n_non_ref);
     let mut scratch_particles: Vec<Particle> = Vec::with_capacity(n_non_ref);
-
-    let mut global_predictions = Array::zeros((config.n_outputs, n_samples));
-    let all_indices: Vec<i32> = (0..n_samples as i32).collect(); 
-
-    for particle in particles.iter_mut() {
-        global_predictions.fill(0.0);
-        particle.tree.predict_training_into_multi(&mut global_predictions, Some(data.x));
-        global_predictions += &sum_trees_noi;
-        
-        let flat: Vec<f64> = global_predictions.iter().copied().collect();
-        particle.log_weight = weight_fn.log_weight(&flat, &all_indices);
-    }
+    let mut mutated = vec![false; n_non_ref];
 
     while particles[1..].iter().any(|p| p.has_expandable_nodes()) {
-        for particle in particles[1..].iter_mut() {
-            if let Some(node_idx_u32) = particle.peek_next_expandable() {
-                let node_idx = node_idx_u32 as usize;
+        mutated.iter_mut().for_each(|m| *m = false);
+        for (_i, particle) in particles[1..].iter_mut().enumerate() {
+            if let Some(node_idx) = particle.peek_next_expandable() {
+                let node_idx = node_idx as usize;
 
                 match propose_mutation(
-                    rng, particle, node_idx, sum_trees, config, data, split_rules, leaf_sd, response,
+                    rng,
+                    particle,
+                    node_idx,
+                    sum_trees,
+                    config,
+                    data,
+                    split_rules,
+                    leaf_sd,
+                    response,
                 ) {
                     MutationDecision::Accept(proposal) => {
-                        let active_indices = particle.leaf_samples(node_idx).to_vec();
-                        
-                        subset_idx_buf.clear();
-                        subset_idx_buf.extend(active_indices.iter().map(|&idx| idx as i32));
-                        
-                        // Likelihood of old tree
-                        particle.tree.fill_subset_preds(&active_indices, &sum_trees_noi, data.x, &mut subset_preds_buf);
-                        let old_local_logp = weight_fn.log_weight(&subset_preds_buf, &subset_idx_buf);
-                        
-                        // Propose change to tree
+
+                        let active_indices: Vec<i32> = particle.leaf_samples(node_idx).iter().map( |&i| i as i32).collect();
+                        let old_cont: f64 = active_indices.iter().map( |i| particle.ll_pointwise[*i as usize]).sum();
+
                         particle.pop_next_expandable();
                         particle.apply_mutation(&proposal, data.x);
                         acceptance_count += 1;
+                        // mutated[i] = true;
                         
-                        // Likelihood of mutated tree
-                        particle.tree.fill_subset_preds(&active_indices, &sum_trees_noi, data.x, &mut subset_preds_buf);
-                        let new_local_logp = weight_fn.log_weight(&subset_preds_buf, &subset_idx_buf);
-                        
-                        particle.log_weight += new_local_logp - old_local_logp;
+                        particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
+                        let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+                        predictions_buf += &sum_trees_noi;
+                        particle.log_weight -= old_cont + weight_fn.log_weight(&flat, &active_indices)
                     }
                     MutationDecision::Reject => {
                         particle.pop_next_expandable();
                     }
-                } 
+                }
             }
         }
 
+        // for (i, particle) in particles[1..].iter_mut().enumerate() {
+        //     if mutated[i] {
+        //         particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
+        //         predictions_buf += &sum_trees_noi;
+        //         let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+        //         particle.log_weight = weight_fn.log_weight(&flat);
+        //     }
+        // }
+
         inner_weights.copy_from_slice(&particles[1..].iter().map(|p| p.log_weight).collect::<Vec<f64>>());
+
         normalize_weights_inplace(&mut inner_weights);
 
         resampling.resample_into(rng, &inner_weights, &mut ancestors_buf);
@@ -126,16 +131,25 @@ where
         particles.append(&mut scratch_particles);
     }
 
-    // map the log_weights directly from the particles
-    let mut weights: Vec<f64> = particles.iter().map(|p| p.log_weight).collect();
+    let mut log_weights = vec![0.0f64; config.n_particles];
+    for (i, particle) in particles.iter().enumerate() {
+        particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
+        predictions_buf += &sum_trees_noi;
+        let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+        log_weights[i] = weight_fn.log_weight(&flat, &base_index);
+    }
+
+    let mut weights = log_weights.clone();
+
     normalize_weights_inplace(&mut weights);
 
     let dist = WeightedIndex::new(&weights).unwrap();
     let selected_idx = dist.sample(rng);
 
-    let selected_log_like = particles[selected_idx].log_weight;
+    let selected_log_like = log_weights[selected_idx];
 
     let selected_particle = particles.swap_remove(selected_idx);
+    // Drop remaining particles now so their Arc refs are released before try_unwrap.
     drop(particles);
     let final_tree = match Arc::try_unwrap(selected_particle.tree) {
         Ok(tree) => tree,
@@ -163,6 +177,11 @@ fn propose_mutation(
     response: &dyn ResponseStrategy,
 ) -> MutationDecision {
     let depth = particle.tree.get_depth(node_idx);
+
+    if depth >= config.max_depth as usize {
+        return MutationDecision::Reject;
+    }
+
     if depth == 0 {
         // continue;
     } else {

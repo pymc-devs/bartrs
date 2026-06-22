@@ -11,6 +11,7 @@ import numba
 import pandas as pd
 import pymc as pm
 import pytensor
+import pytensor.tensor as pt
 
 from pymc.pytensorf import (
     compile,
@@ -20,6 +21,7 @@ from pymc.pytensorf import (
 )
 from numba import carray, cfunc, extending, float64, types, njit, int32
 from numba.core import cgutils
+from pytensor.assumptions.specify import assume
 
 
 @numba.extending.intrinsic
@@ -187,15 +189,24 @@ class CompiledPyMCModel:
         #
         shared = make_shared_replacements(initial_values, value_vars, model)
 
-        out_vars = [model.datalogp] # shouldn't do it over data
+        idx = pt.ivector("idx")
+        idx_unique = assume(idx, unique_indices=True)
+
+        obs_logps = []
+        for obs_rv in model.observed_RVs:
+            rv_logp_list = model.logp(obs_rv, sum=False)
+            rv_logp = rv_logp_list[0]
+            subset_logp = rv_logp[idx_unique]
+            obs_logps.append(pt.sum(subset_logp))
+        out_vars = pt.sum(obs_logps)
 
         # Join non-shared inputs and prepare for compilation
         # This separates model parameters from shared/observed data
         new_out, new_joined_inputs = join_nonshared_inputs(
-            initial_values, out_vars, value_vars, shared
+            initial_values, [out_vars], value_vars, shared
         )
 
-        logp_fn = compile(inputs=[new_joined_inputs], outputs=new_out[0], mode="NUMBA")
+        logp_fn = compile(inputs=[new_joined_inputs, idx], outputs=new_out[0], mode="NUMBA")
         logp_fn.trust_input = True
 
         return shape, logp_fn, shared
@@ -231,8 +242,8 @@ class CompiledPyMCModel:
         All arrays are ensured to be float64 for consistency with
         the compiled function interface.
         """
-        arrays = [item.storage[0].copy() for item in self.logp_fn_ptr.input_storage[1:]]
-        assert all(arr.dtype == np.float64 for arr in arrays)
+        arrays = [item.storage[0].copy() for item in self.logp_fn_ptr.input_storage[2:]]
+        # assert all(arr.dtype == np.float64 for arr in arrays)
         return arrays
 
     # TODO: fast update for shared arrays
@@ -258,7 +269,7 @@ class CompiledPyMCModel:
         Observed data (e.g., design matrix `X` and targets `y`) are stored in
         input storage.
         """
-        for array, storage in zip(self.logp_args, self.logp_fn_ptr.input_storage[1:]):
+        for array, storage in zip(self.logp_args, self.logp_fn_ptr.input_storage[2:]):
             # NOTE: np.copyto is the old implementation
             np.copyto(array, storage.storage[0])
             # self._fast_update(array, storage.storage[0])
@@ -269,7 +280,7 @@ class CompiledPyMCModel:
         This method creates a Numba-compiled C function that can be called
         from external code (e.g., Rust via FFI). The function signature is:
 
-        `double logp(double* ptr, int size)`
+        `double logp(double* ptr, int size, int* idx_ptr, int idx_size)`
 
         The generated function:
         1. Wraps the input pointer as a NumPy array
@@ -286,9 +297,9 @@ class CompiledPyMCModel:
         shared_arrays = self.logp_args
 
         code = [
-            "def _logp(ptr, idx_ptr, size):",
+            "def _logp(ptr, size, idx_ptr, idx_size):",
             "    data = carray(ptr, (size, ), dtype=float64)",
-            "    indexes = carray(idx_ptr, (size, ), dtype=int32)", 
+            "    indexes = carray(idx_ptr, (idx_size, ), dtype=int32)", 
         ]
 
         for i, array in enumerate(shared_arrays):
@@ -299,7 +310,7 @@ class CompiledPyMCModel:
             )
             code.append(line)
 
-        ret = f"    return logp_fn(data, {', '.join(f'arg{i}' for i in range(len(shared_arrays)))})[0].item()"
+        ret = f"    return logp_fn(data, indexes, {', '.join(f'arg{i}' for i in range(len(shared_arrays)))})[0].item()"
         code.append(ret)
         source = "\n".join(code)
 
@@ -311,6 +322,7 @@ class CompiledPyMCModel:
 
         sig = types.float64(
             types.CPointer(types.float64),
+            types.intc,
             types.CPointer(types.int32),
             types.intc,
         )
@@ -326,16 +338,18 @@ class CompiledPyMCModel:
     def _generate_ctypes_logp_function(self, logp_fn, shared_arrays):
         """Fallback log-probability callback implemented with ctypes."""
 
-        callback_type = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int)
+        callback_type = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int, 
+                                        ctypes.POINTER(ctypes.c_int32), ctypes.c_int)
 
-        def _logp(ptr, size):
+        def _logp(ptr, size, idx_ptr, idx_size):
             data = np.ctypeslib.as_array(ptr, shape=(size,))
+            indexes = np.ctypeslib.as_array(idx_ptr, shape=(idx_size,)).astype(np.int32)
 
             args = []
             for array in shared_arrays:
                 args.append(array)
 
-            result = logp_fn(data, *args)
+            result = logp_fn(data, indexes, *args)
             return float(np.asarray(result).reshape(-1)[0])
 
         callback = callback_type(_logp)
