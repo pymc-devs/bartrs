@@ -34,7 +34,7 @@ impl Default for BartConfig {
             batch_tune: 0.1,
             batch_post: 0.1,
             n_outputs: 1,
-            response: "gaussian".to_string(),
+            response: "constant".to_string(),
         }
     }
 }

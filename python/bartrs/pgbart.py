@@ -34,7 +34,7 @@ from pymc_bart.utils import _encode_vi
 
 class PGBART(ArrayStepShared):
     """
-    Particle Gibss BART sampling step.
+    Particle Gibbs BART sampling step.
 
     Parameters
     ----------
@@ -100,7 +100,6 @@ class PGBART(ArrayStepShared):
 
 
         self.shape = 1 if len(shape) == 1 else shape[0]
-
 
         # Set trees_shape (dim for separate tree structures)
         # and leaves_shape (dim for leaf node values)
@@ -244,7 +243,7 @@ class PGBART(ArrayStepShared):
 
         sum_trees, trees, variable_inclusion = self.pg_bart.step(self.tune)
         if not self.tune:
-            self.bart.all_trees.append(trees) # this doubles runtime
+            self.bart.all_trees.append(trees) # this is slow, I think
         t1 = perf_counter()
 
         stats = {

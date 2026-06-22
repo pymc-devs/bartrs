@@ -57,6 +57,7 @@ pub struct Particle {
     pub expandable_nodes: VecDeque<u32>,
     pub sample_map: LeafSamplesFlat,
     pub log_weight: f64,
+    pub ll_pointwise: Vec<f64>,
 }
 
 impl Particle {
@@ -67,6 +68,7 @@ impl Particle {
             expandable_nodes: VecDeque::from([0]),
             sample_map: LeafSamplesFlat::new(n_samples, max_depth),
             log_weight: 0.0,
+            ll_pointwise: vec![0.0; n_samples],
         }
     }
 
@@ -77,6 +79,7 @@ impl Particle {
             expandable_nodes: VecDeque::new(),
             sample_map: LeafSamplesFlat::new(n_samples, max_depth),
             log_weight: 0.0,
+            ll_pointwise: vec![0.0; n_samples],
         }
     }
 
@@ -113,7 +116,7 @@ impl Particle {
             }
         }
 
-        Self { tree: Arc::new(tree), expandable_nodes, sample_map, log_weight: 0.0 }
+        Self { tree: Arc::new(tree), expandable_nodes, sample_map, log_weight: 0.0, ll_pointwise: vec![0.0; n_samples] }
     }
 
     pub fn has_expandable_nodes(&self) -> bool {

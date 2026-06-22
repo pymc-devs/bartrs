@@ -393,7 +393,7 @@ impl TreeArrays {
         }
     }
 
-    fn fill_training_leaf_value(
+    pub fn fill_training_leaf_value(
         &self,
         leaf_idx: usize,
         sample_idx: usize,

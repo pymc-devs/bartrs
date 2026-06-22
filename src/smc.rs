@@ -63,6 +63,9 @@ where
     current_tree.predict_training_into_multi(&mut current_tree_pred, Some(data.x));
     sum_trees_noi.assign(sum_trees);
     sum_trees_noi -= &current_tree_pred;
+    
+    let storage: Vec<i32> = (0..n_samples as i32).collect();
+    let base_index: &[i32] = &storage;
 
     let mut predictions_buf = Array::zeros((config.n_outputs, n_samples));
     let mut ancestors_buf: Vec<usize> = Vec::with_capacity(n_non_ref);
@@ -71,7 +74,7 @@ where
 
     while particles[1..].iter().any(|p| p.has_expandable_nodes()) {
         mutated.iter_mut().for_each(|m| *m = false);
-        for (i, particle) in particles[1..].iter_mut().enumerate() {
+        for (_i, particle) in particles[1..].iter_mut().enumerate() {
             if let Some(node_idx) = particle.peek_next_expandable() {
                 let node_idx = node_idx as usize;
 
@@ -87,10 +90,19 @@ where
                     response,
                 ) {
                     MutationDecision::Accept(proposal) => {
+
+                        let active_indices: Vec<i32> = particle.leaf_samples(node_idx).iter().map( |&i| i as i32).collect();
+                        let old_cont: f64 = active_indices.iter().map( |i| particle.ll_pointwise[*i as usize]).sum();
+
                         particle.pop_next_expandable();
                         particle.apply_mutation(&proposal, data.x);
                         acceptance_count += 1;
-                        mutated[i] = true;
+                        // mutated[i] = true;
+                        
+                        particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
+                        let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+                        predictions_buf += &sum_trees_noi;
+                        particle.log_weight -= old_cont + weight_fn.log_weight(&flat, &active_indices)
                     }
                     MutationDecision::Reject => {
                         particle.pop_next_expandable();
@@ -99,15 +111,14 @@ where
             }
         }
 
-        for (i, particle) in particles[1..].iter_mut().enumerate() {
-            if mutated[i] {
-                predictions_buf.fill(0.0);
-                particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
-                predictions_buf += &sum_trees_noi;
-                let flat: Vec<f64> = predictions_buf.iter().copied().collect();
-                particle.log_weight = weight_fn.log_weight(&flat);
-            }
-        }
+        // for (i, particle) in particles[1..].iter_mut().enumerate() {
+        //     if mutated[i] {
+        //         particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
+        //         predictions_buf += &sum_trees_noi;
+        //         let flat: Vec<f64> = predictions_buf.iter().copied().collect();
+        //         particle.log_weight = weight_fn.log_weight(&flat);
+        //     }
+        // }
 
         inner_weights.copy_from_slice(&particles[1..].iter().map(|p| p.log_weight).collect::<Vec<f64>>());
 
@@ -122,11 +133,10 @@ where
 
     let mut log_weights = vec![0.0f64; config.n_particles];
     for (i, particle) in particles.iter().enumerate() {
-        predictions_buf.fill(0.0);
         particle.tree.predict_training_into_multi(&mut predictions_buf, Some(data.x));
         predictions_buf += &sum_trees_noi;
         let flat: Vec<f64> = predictions_buf.iter().copied().collect();
-        log_weights[i] = weight_fn.log_weight(&flat);
+        log_weights[i] = weight_fn.log_weight(&flat, &base_index);
     }
 
     let mut weights = log_weights.clone();
@@ -167,6 +177,11 @@ fn propose_mutation(
     response: &dyn ResponseStrategy,
 ) -> MutationDecision {
     let depth = particle.tree.get_depth(node_idx);
+
+    if depth >= config.max_depth as usize {
+        return MutationDecision::Reject;
+    }
+
     if depth == 0 {
         // continue;
     } else {

@@ -33,7 +33,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand_distr::StandardNormal;
 
-type LogpFunc = unsafe extern "C" fn(*const f64, usize) -> c_double;
+type LogpFunc = unsafe extern "C" fn(*const f64, i32, *const i32, i32) -> c_double;
 
 #[pyclass]
 #[derive(Clone, Debug)]
