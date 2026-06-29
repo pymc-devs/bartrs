@@ -53,6 +53,7 @@ pub struct PyBartSettings {
     batch_tune: f64,
     batch_post: f64,
     seed: u64,
+    n_draws: usize,
 }
 
 #[pymethods]
@@ -73,6 +74,7 @@ impl PyBartSettings {
         batch_tune = 0.1,
         batch_post = 0.1,
         seed = 0,
+        n_draws = 0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -90,6 +92,7 @@ impl PyBartSettings {
         batch_tune: f64,
         batch_post: f64,
         seed: u64,
+        n_draws: usize,
     ) -> Self {
         Self {
             n_trees,
@@ -106,6 +109,7 @@ impl PyBartSettings {
             batch_tune,
             batch_post,
             seed,
+            n_draws,
         }
     }
 }
@@ -115,6 +119,7 @@ struct PySampler {
     kernel: Box<dyn ErasedKernel>,
     state: Option<crate::state::BartState>,
     rng: SmallRng,
+    all_trees: Vec<TreeArrays>,
 }
 
 #[pymethods]
@@ -193,7 +198,13 @@ impl PySampler {
         };
 
         let data = OwnedData::new(x_data, y_data);
-        
+
+        let all_trees: Vec<TreeArrays> = if settings.n_draws == 0 {
+            Vec::new()
+        } else {
+            Vec::with_capacity(config.n_trees * settings.n_draws)
+        };
+
         let kernel = BartKernel {
             split_rules,
             resampling: SystematicResampling,
@@ -208,6 +219,7 @@ impl PySampler {
             kernel: Box::new(kernel),
             state: Some(state),
             rng,
+            all_trees,
         })
     }
 
@@ -216,7 +228,7 @@ impl PySampler {
         &mut self,
         py: Python<'py>,
         tune: Option<bool>,
-    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<TreeArrays>, Vec<u32>)> {
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<u32>)> {
 
         let mut state = self
             .state
@@ -227,11 +239,17 @@ impl PySampler {
             state.tune = t;
         }
 
+        let tune = state.tune;
+
         let (mut new_state, _info) = self.kernel.step(&mut self.rng, state);
 
         // Need to return TreeArrays
         let trees = std::mem::take(&mut new_state.forest);
         new_state.forest = trees.clone();
+
+        if !tune {
+            self.all_trees.extend(trees.clone());
+        }
 
         // Return predictions as a 2-D array with shape (n_outputs, n_samples)
         let result = numpy::PyArray2::from_owned_array(py, new_state.predictions.clone());
@@ -240,8 +258,13 @@ impl PySampler {
 
         let variable_inclusion = self.state.as_ref().unwrap().get_variable_inclusion();
 
-        Ok((result, trees, variable_inclusion))
+        Ok((result, variable_inclusion))
     }
+
+    fn get_results(&mut self) -> Vec<TreeArrays> {
+        std::mem::take(&mut self.all_trees)
+    }
+
 }
 
 #[pymodule]

@@ -102,6 +102,14 @@ class PGBART(ArrayStepShared):
         self.shape = 1 if len(shape) == 1 else shape[0]
 
 
+        self.n_draws = self.bart.n_draws
+        self.n_tune = self.bart.n_tune
+        if self.n_draws is None:
+            self.n_draws = -1  # Use -1 to indicate that n_draws is not specified
+            self.n_tune = -1
+
+        self.n_steps = 0
+
         # Set trees_shape (dim for separate tree structures)
         # and leaves_shape (dim for leaf node values)
         # One of the two is always one, the other equal to self.shape
@@ -165,6 +173,7 @@ class PGBART(ArrayStepShared):
             resampling_rule="systematic",
             batch_tune=batch[0],
             batch_post=batch[1],
+            n_draws=self.n_draws,
         )
 
         # child processes spawned with spawn need to be able
@@ -187,6 +196,7 @@ class PGBART(ArrayStepShared):
             "resampling_rule": "systematic",
             "batch_tune": batch[0],
             "batch_post": batch[1],
+            "n_draws": self.n_draws,
         }
 
         # INFO: Only at the end do we return the State structure back to Python to avoid
@@ -242,9 +252,16 @@ class PGBART(ArrayStepShared):
         self.compiled_pymc_model.update_shared_arrays()
     #     sum_trees, variable_inclusion = step(self.state, self.tune)
 
-        sum_trees, trees, variable_inclusion = self.pg_bart.step(self.tune)
-        if not self.tune:
-            self.bart.all_trees.append(trees) # this doubles runtime
+        sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
+
+
+        #  if not self.tune:
+        #     self.bart.all_trees.append(trees) # this doubles runtime
+
+        if self.n_steps == (self.n_draws + self.n_tune):
+            chain_trees = self.pg_bart.get_results()
+            self.bart.all_trees.extend(chain_trees)
+        
         t1 = perf_counter()
 
         stats = {
