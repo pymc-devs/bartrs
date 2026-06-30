@@ -254,13 +254,17 @@ class PGBART(ArrayStepShared):
 
         sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
 
-
         #  if not self.tune:
         #     self.bart.all_trees.append(trees) # this doubles runtime
 
         if self.n_steps == (self.n_draws + self.n_tune):
             chain_trees = self.pg_bart.get_results()
             self.bart.all_trees.extend(chain_trees)
+
+        # Log lik
+        # Pymc n draws
+        # n trees
+        # examples for gradients
         
         t1 = perf_counter()
 
