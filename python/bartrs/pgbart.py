@@ -261,10 +261,6 @@ class PGBART(ArrayStepShared):
             chain_trees = self.pg_bart.get_results()
             self.bart.all_trees.extend(chain_trees)
 
-        # Log lik
-        # Pymc n draws
-        # n trees
-        # examples for gradients
         
         t1 = perf_counter()
 
