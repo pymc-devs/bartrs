@@ -23,11 +23,13 @@ use crate::splitting::{ContinuousSplit, SplitRules};
 use crate::weight::PyMCWeightFn;
 
 use numpy::{
-    PyReadonlyArray, PyReadonlyArrayDyn, PyArray2, PyUntypedArrayMethods,
-    ndarray::{Array1, Array2, ArrayView1, ArrayViewMut1, Ix2},
+    PyReadonlyArray, PyReadonlyArrayDyn, PyArray2, PyArray3, PyUntypedArrayMethods, PyReadonlyArray2,
+    ToPyArray,
+    ndarray::{Array, Array1, Array2, Array3, ArrayView1, ArrayViewMut1, Ix2, Ix3, s},
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::{PyList};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -245,7 +247,7 @@ impl PySampler {
 
         // Need to return TreeArrays
         let trees = std::mem::take(&mut new_state.forest);
-        new_state.forest = trees.clone();
+        new_state.forest = trees.clone();         // Vec<TreeArrays>
 
         if !tune {
             self.all_trees.extend(trees.clone());
@@ -261,8 +263,49 @@ impl PySampler {
         Ok((result, variable_inclusion))
     }
 
-    fn get_results(&mut self) -> Vec<TreeArrays> {
-        std::mem::take(&mut self.all_trees)
+
+    fn sample_posterior<'py>(&self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>>{
+
+        let data = x.as_array().to_owned();
+
+        let excl = match excluded {
+            Some(list) => list.iter()
+                .map(|item| item.extract::<usize>())
+                .collect::<PyResult<Vec<usize>>>()?,
+            None => Vec::new(),
+        };
+
+        let preds = self._sample_posterior(&data, samples, &excl).to_pyarray(py).unbind();
+        return Ok(preds)
+    }
+}
+
+impl PySampler {
+
+    fn _sample_posterior(&self, x: &Array<f64, Ix2>, samples: usize, excluded: &Vec<usize>) -> Array<f64, Ix3> {
+        
+        let n_outputs = self.kernel.config.n_outputs;
+
+        let n_data_samples: usize = x.nrows();
+        let n_forests: u32 = self.all_trees.len() as u32;
+        
+        let mut random_samples = vec![0usize; samples];
+
+        for x in random_samples {
+            x = self.rng.random_range(0..n_forests) as usize;
+        }
+
+        let predictions = Array3::zeros((samples, n_outputs, n_data_samples));
+
+        for posterior_sample_idx in 0..samples {
+
+            let draw_forest_idx = random_samples[posterior_sample_idx];
+
+            for tree in self.all_trees[draw_forest_idx].iter() {
+                predictions.slice_mut(s![posterior_sample_idx as i32, :, :]) += &tree.predict_batch_test(x, excluded);
+            }
+        }
+    predictions
     }
 
 }
@@ -306,18 +349,18 @@ fn are_whole_number(col: ArrayView1<'_, f64>) -> bool {
 }
 
 fn nanstd(col: ArrayView1<'_, f64>) -> f64 {
-    let mut count = 0usize;
-    let mut mean = 0.0f64;
-    let mut m2 = 0.0f64;
+    let mut count: usize = 0usize;
+    let mut mean: f64 = 0.0f64;
+    let mut m2: f64 = 0.0f64;
 
     for &value in col.iter() {
         if value.is_nan() {
             continue;
         }
         count += 1;
-        let delta = value - mean;
+        let delta: f64 = value - mean;
         mean += delta / count as f64;
-        let delta2 = value - mean;
+        let delta2: f64 = value - mean;
         m2 += delta * delta2;
     }
 

@@ -102,13 +102,10 @@ class PGBART(ArrayStepShared):
         self.shape = 1 if len(shape) == 1 else shape[0]
 
 
-        self.n_draws = self.bart.n_draws
-        self.n_tune = self.bart.n_tune
-        if self.n_draws is None:
-            self.n_draws = -1  # Use -1 to indicate that n_draws is not specified
-            self.n_tune = -1
-
-        self.n_steps = 0
+        # Updated later in self.setup() by pymc.sample(...)
+        self.n_draws = 0
+        self.n_tune = 0
+        self.n_total = 0
 
         # Set trees_shape (dim for separate tree structures)
         # and leaves_shape (dim for leaf node values)
@@ -215,6 +212,8 @@ class PGBART(ArrayStepShared):
         )
 
         self.tune = True
+
+        self.check = True
         super().__init__(vars, self.compiled_pymc_model.shared)
 
     def __getstate__(self):
@@ -247,22 +246,14 @@ class PGBART(ArrayStepShared):
 
 
     def astep(self, _):
-    #     # Record time to quantify performance improvements
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
-    #     sum_trees, variable_inclusion = step(self.state, self.tune)
-
         sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
-
-        #  if not self.tune:
-        #     self.bart.all_trees.append(trees) # this doubles runtime
-
-        if self.n_steps == (self.n_draws + self.n_tune):
-            chain_trees = self.pg_bart.get_results()
-            self.bart.all_trees.extend(chain_trees)
-
-        
         t1 = perf_counter()
+
+        if self.check == True:
+            print(self.n_draws, self.n_tune, self.n_total)
+            self.check = False
 
         stats = {
             "variable_inclusion": _encode_vi(variable_inclusion),
@@ -281,6 +272,10 @@ class PGBART(ArrayStepShared):
             return Competence.IDEAL
         return Competence.INCOMPATIBLE
 
+    def setup(self, tune: int, draws: int) -> None:
+        self.n_draws = draws
+        self.n_tune = tune
+        self.n_total = draws + tune
 
 def calculate_max_tree_depth(alpha: float, beta: float, probs_leaf: float) -> int:
     """Calculates the maximum tree depth for which the probability of a node
