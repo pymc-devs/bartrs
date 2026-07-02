@@ -12,7 +12,7 @@ use crate::data::NotNan;
 /// Internal nodes store split variable and threshold. Leaf nodes store
 /// predicted values. The `leaf_indices` vector maps each training sample
 /// to its assigned leaf node.
-#[pyclass(module = "bartrs.bartrs", get_all)]
+#[pyclass(module = "bartrs.bartrs", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct TreeArrays {
     /// Split variable per node (u32::MAX = leaf sentinel)
@@ -113,7 +113,7 @@ impl TreeArrays {
     }
 
     pub fn __setstate__(&mut self, state: &Bound<'_, PyAny>) -> PyResult<()> {
-        let dict: &Bound<'_, PyDict> = state.downcast::<PyDict>()?;
+        let dict: &Bound<'_, PyDict> = state.cast::<PyDict>()?;
         self.split_var = dict.get_item("split_var").unwrap().expect("split_var not found").extract()?;
         self.split_val = dict.get_item("split_val").unwrap().expect("split_val not found").extract()?;
         self.leaf_val = dict.get_item("leaf_val").unwrap().expect("leaf_val not found").extract()?;
@@ -129,12 +129,12 @@ impl TreeArrays {
         Ok(())
     } 
 
-    pub fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(PyObject, (f64, usize, u8, usize), Py<PyDict>)> {
+    pub fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Py<PyAny>, (f64, usize, u8, usize), Py<PyDict>)> {
         let cls = py.get_type::<TreeArrays>();
         // args are what `new(init_leaf_value, n_samples, max_depth, n_outputs)` expects
         let args = (self.leaf_val.get(0).copied().unwrap_or(0.0), self.leaf_indices.len(), self.max_depth, self.n_outputs);
         let state = self.to_state(py)?;
-        Ok((cls.into(), args, state))
+        Ok((cls.as_any().clone().unbind(), args, state))
     }
 
 

@@ -37,7 +37,7 @@ use rand_distr::StandardNormal;
 
 type LogpFunc = unsafe extern "C" fn(*const f64, usize) -> c_double;
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct PyBartSettings {
@@ -121,7 +121,7 @@ struct PySampler {
     kernel: Box<dyn ErasedKernel>,
     state: Option<crate::state::BartState>,
     rng: SmallRng,
-    all_trees: Vec<TreeArrays>,
+    all_trees: Vec<Vec<TreeArrays>>,
 }
 
 #[pymethods]
@@ -201,10 +201,10 @@ impl PySampler {
 
         let data = OwnedData::new(x_data, y_data);
 
-        let all_trees: Vec<TreeArrays> = if settings.n_draws == 0 {
+        let all_trees: Vec<Vec<TreeArrays>> = if settings.n_draws == 0 {
             Vec::new()
         } else {
-            Vec::with_capacity(config.n_trees * settings.n_draws)
+            Vec::with_capacity(settings.n_draws)
         };
 
         let kernel = BartKernel {
@@ -250,7 +250,7 @@ impl PySampler {
         new_state.forest = trees.clone();         // Vec<TreeArrays>
 
         if !tune {
-            self.all_trees.extend(trees.clone());
+            self.all_trees.push(trees);
         }
 
         // Return predictions as a 2-D array with shape (n_outputs, n_samples)
@@ -264,7 +264,7 @@ impl PySampler {
     }
 
 
-    fn sample_posterior<'py>(&self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>>{
+    fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>>{
 
         let data = x.as_array().to_owned();
 
@@ -282,27 +282,24 @@ impl PySampler {
 
 impl PySampler {
 
-    fn _sample_posterior(&self, x: &Array<f64, Ix2>, samples: usize, excluded: &Vec<usize>) -> Array<f64, Ix3> {
+    fn _sample_posterior(&mut self, x: &Array<f64, Ix2>, samples: usize, excluded: &Vec<usize>) -> Array<f64, Ix3> {
         
-        let n_outputs = self.kernel.config.n_outputs;
+    let n_outputs = self.state.as_ref().expect("Sampler state is missing").predictions.nrows();
 
         let n_data_samples: usize = x.nrows();
         let n_forests: u32 = self.all_trees.len() as u32;
         
-        let mut random_samples = vec![0usize; samples];
+        let random_samples: Vec<usize> = (0..samples).map( | _ | self.rng.random_range(0..n_forests) as usize).collect();
 
-        for x in random_samples {
-            x = self.rng.random_range(0..n_forests) as usize;
-        }
-
-        let predictions = Array3::zeros((samples, n_outputs, n_data_samples));
+        let mut predictions = Array3::zeros((samples, n_outputs, n_data_samples));
 
         for posterior_sample_idx in 0..samples {
 
             let draw_forest_idx = random_samples[posterior_sample_idx];
 
             for tree in self.all_trees[draw_forest_idx].iter() {
-                predictions.slice_mut(s![posterior_sample_idx as i32, :, :]) += &tree.predict_batch_test(x, excluded);
+                let mut sample = predictions.slice_mut(s![posterior_sample_idx, .., ..]);
+                sample += &tree.predict_batch_test(x, excluded);
             }
         }
     predictions
