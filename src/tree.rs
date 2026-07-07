@@ -6,6 +6,11 @@ use pyo3::types::{PyDict, PyList};
 use crate::response::{LeafKind, LeafPayload, LeafProposal};
 use crate::data::NotNan;
 
+pub struct TreeBatch {
+    pub start: usize,
+    pub trees: Vec<TreeArrays>,
+}
+
 /// Bartz-style heap-indexed tree with separate internal/leaf arrays.
 ///
 /// Uses heap convention: root=0, left=2i+1, right=2i+2.

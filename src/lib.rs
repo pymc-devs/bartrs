@@ -14,7 +14,7 @@ pub mod tree;
 pub mod update;
 pub mod weight;
 
-use crate::tree::TreeArrays;
+use crate::tree::{TreeArrays, TreeBatch};
 use crate::config::BartConfig;
 use crate::data::OwnedData;
 use crate::kernel::{BartKernel, ErasedKernel, SamplingAlgorithm};
@@ -121,7 +121,9 @@ struct PySampler {
     kernel: Box<dyn ErasedKernel>,
     state: Option<crate::state::BartState>,
     rng: SmallRng,
-    all_trees: Vec<Vec<TreeArrays>>,
+    all_trees: Vec<TreeBatch>,
+    baseline_forest: Option<Vec<TreeArrays>>,
+    n_trees: usize,
 }
 
 #[pymethods]
@@ -201,7 +203,7 @@ impl PySampler {
 
         let data = OwnedData::new(x_data, y_data);
 
-        let all_trees: Vec<Vec<TreeArrays>> = if settings.n_draws == 0 {
+        let all_trees: Vec<TreeBatch> = if settings.n_draws == 0 {
             Vec::new()
         } else {
             Vec::with_capacity(settings.n_draws)
@@ -222,6 +224,8 @@ impl PySampler {
             state: Some(state),
             rng,
             all_trees,
+            baseline_forest: None,
+            n_trees: settings.n_trees,
         })
     }
 
@@ -240,17 +244,21 @@ impl PySampler {
         if let Some(t) = tune {
             state.tune = t;
         }
+        let was_tune = state.tune;
 
-        let tune = state.tune;
+        if !was_tune && self.baseline_forest.is_none() {
+            self.baseline_forest = Some(state.forest.clone());
+        }
 
-        let (mut new_state, _info) = self.kernel.step(&mut self.rng, state);
+        let (new_state, info) = self.kernel.step(&mut self.rng, state);
 
-        // Need to return TreeArrays
-        let trees = std::mem::take(&mut new_state.forest);
-        new_state.forest = trees.clone();         // Vec<TreeArrays>
-
-        if !tune {
-            self.all_trees.push(trees);
+        if !was_tune {
+            let mut trees = Vec::with_capacity(info.batch_size);
+            for k in 0..info.batch_size { 
+                let idx = (info.batch_start + k) % self.n_trees;
+                trees.push(new_state.forest[idx].clone());
+            }
+            self.all_trees.push(TreeBatch {start: info.batch_start, trees});
         }
 
         // Return predictions as a 2-D array with shape (n_outputs, n_samples)
@@ -281,28 +289,57 @@ impl PySampler {
 }
 
 impl PySampler {
-
     fn _sample_posterior(&mut self, x: &Array<f64, Ix2>, samples: usize, excluded: &Vec<usize>) -> Array<f64, Ix3> {
-        
-    let n_outputs = self.state.as_ref().expect("Sampler state is missing").predictions.nrows();
-
+        let n_outputs = self.state.as_ref().expect("Sampler state is missing").predictions.nrows();
         let n_data_samples: usize = x.nrows();
-        let n_forests: u32 = self.all_trees.len() as u32;
-        
-        let random_samples: Vec<usize> = (0..samples).map( | _ | self.rng.random_range(0..n_forests) as usize).collect();
+        let n_trees = self.n_trees;
+        let n_draws = self.all_trees.len();
+
+        assert!(n_draws > 0, "No posterior draws stored yet");
+
+        let random_samples: Vec<usize> = (0..samples)
+            .map(|_| self.rng.random_range(0..n_draws as u32) as usize)
+            .collect();
 
         let mut predictions = Array3::zeros((samples, n_outputs, n_data_samples));
 
         for posterior_sample_idx in 0..samples {
+            let draw_idx = random_samples[posterior_sample_idx];
+            let mut sample = predictions.slice_mut(s![posterior_sample_idx, .., ..]);
 
-            let draw_forest_idx = random_samples[posterior_sample_idx];
+            let mut covered = vec![false; n_trees];
+            let mut remaining = n_trees;
 
-            for tree in self.all_trees[draw_forest_idx].iter() {
-                let mut sample = predictions.slice_mut(s![posterior_sample_idx, .., ..]);
-                sample += &tree.predict_batch_test(x, excluded);
+            // Walk backward from draw_idx, taking the most recent version of
+            // each tree slot until every slot is accounted for.
+            let mut b = draw_idx as isize;
+            while remaining > 0 && b >= 0 {
+                let batch = &self.all_trees[b as usize];
+                for (k, tree) in batch.trees.iter().enumerate() {
+                    let tree_idx = (batch.start + k) % n_trees;
+                    if !covered[tree_idx] {
+                        covered[tree_idx] = true;
+                        remaining -= 1;
+                        sample += &tree.predict_batch_test(x, excluded);
+                    }
+                }
+                b -= 1;
+            }
+
+            // Ran out of stored history before covering all slots: fill the rest
+            // from the end-of-tuning snapshot.
+            if remaining > 0 {
+                if let Some(baseline) = &self.baseline_forest {
+                    for tree_idx in 0..n_trees {
+                        if !covered[tree_idx] {
+                            sample += &baseline[tree_idx].predict_batch_test(x, excluded);
+                        }
+                    }
+                }
             }
         }
-    predictions
+
+        predictions
     }
 
 }

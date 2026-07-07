@@ -127,6 +127,7 @@ where
         let batch_size = ((batch_frac * n_trees as f64).round() as usize)
             .max(1)
             .min(n_trees);
+        let batch_start = state.next_tree_idx;
 
         let mut acceptance_count = 0;
         let mut tree_depths = Vec::with_capacity(batch_size);
@@ -200,6 +201,9 @@ where
             log_likelihood: total_log_likelihood,
             acceptance_count,
             tree_depths,
+            batch_start,
+            batch_size,
+
         };
 
         (state, info)
