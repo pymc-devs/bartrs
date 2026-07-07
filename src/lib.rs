@@ -37,6 +37,11 @@ use rand_distr::StandardNormal;
 
 type LogpFunc = unsafe extern "C" fn(*const f64, usize) -> c_double;
 
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -247,19 +252,25 @@ impl PySampler {
         let was_tune = state.tune;
 
         if !was_tune && self.baseline_forest.is_none() {
-            self.baseline_forest = Some(state.forest.clone());
+            let mut forest = state.forest.clone();
+            for t in &mut forest { t.leaf_indices = Vec::new(); }
+            self.baseline_forest = Some(forest);
         }
+        
 
         let (new_state, info) = self.kernel.step(&mut self.rng, state);
 
         if !was_tune {
             let mut trees = Vec::with_capacity(info.batch_size);
-            for k in 0..info.batch_size { 
+            for k in 0..info.batch_size {
                 let idx = (info.batch_start + k) % self.n_trees;
-                trees.push(new_state.forest[idx].clone());
+                let mut t = new_state.forest[idx].clone();
+                t.leaf_indices = Vec::new();   // only the STORED copy loses it
+                trees.push(t);
             }
-            self.all_trees.push(TreeBatch {start: info.batch_start, trees});
+            self.all_trees.push(TreeBatch { start: info.batch_start, trees });
         }
+
 
         // Return predictions as a 2-D array with shape (n_outputs, n_samples)
         let result = numpy::PyArray2::from_owned_array(py, new_state.predictions.clone());
@@ -269,6 +280,75 @@ impl PySampler {
         let variable_inclusion = self.state.as_ref().unwrap().get_variable_inclusion();
 
         Ok((result, variable_inclusion))
+    }
+
+    /// Diagnostic: per-field byte breakdown of everything currently retained in
+    /// `all_trees` + `baseline_forest`. Reports both `len`-based bytes (actual
+    /// data) and `capacity`-based bytes (allocated), so fixed-width buffers and
+    /// capacity slack are both visible. Call once after sampling finishes.
+    fn report_stored_bytes(&self) {
+        use std::collections::BTreeMap;
+
+        let mut len_tot: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut cap_tot: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut n_trees_counted = 0usize;
+        let mut node_count_sum = 0usize; // sum of split_var.len() across trees
+        let mut max_node_count = 0usize;
+
+        let all = self
+            .all_trees
+            .iter()
+            .flat_map(|b| b.trees.iter())
+            .chain(self.baseline_forest.iter().flatten());
+
+        for t in all {
+            n_trees_counted += 1;
+            node_count_sum += t.split_var.len();
+            max_node_count = max_node_count.max(t.split_var.len());
+            for (name, len_b, cap_b) in tree_field_report(t) {
+                *len_tot.entry(name).or_default() += len_b;
+                *cap_tot.entry(name).or_default() += cap_b;
+            }
+        }
+
+        eprintln!(
+            "--- stored tree field breakdown ({} trees, {} batches, baseline={}) ---",
+            n_trees_counted,
+            self.all_trees.len(),
+            self.baseline_forest.is_some()
+        );
+
+        let mut len_sum = 0usize;
+        let mut cap_sum = 0usize;
+        for (name, &lb) in &len_tot {
+            let cb = cap_tot[name];
+            len_sum += lb;
+            cap_sum += cb;
+            eprintln!(
+                "{:<16} len={:>9.2}MB  cap={:>9.2}MB  slack={:>8.2}MB",
+                name,
+                lb as f64 / 1e6,
+                cb as f64 / 1e6,
+                (cb - lb) as f64 / 1e6
+            );
+        }
+        eprintln!(
+            "{:<16} len={:>9.2}MB  cap={:>9.2}MB  slack={:>8.2}MB",
+            "TOTAL",
+            len_sum as f64 / 1e6,
+            cap_sum as f64 / 1e6,
+            (cap_sum - len_sum) as f64 / 1e6
+        );
+
+        if n_trees_counted > 0 {
+            eprintln!(
+                "avg per tree: len={:.0}B cap={:.0}B | avg nodes/tree={:.1} max nodes={}",
+                len_sum as f64 / n_trees_counted as f64,
+                cap_sum as f64 / n_trees_counted as f64,
+                node_count_sum as f64 / n_trees_counted as f64,
+                max_node_count
+            );
+        }
     }
 
 
@@ -342,6 +422,25 @@ impl PySampler {
         predictions
     }
 
+}
+
+/// Per-field byte accounting for a single stored tree.
+/// Returns (field name, bytes from len, bytes from capacity) for each field.
+fn tree_field_report(t: &TreeArrays) -> [(&'static str, usize, usize); 10] {
+    [
+        ("split_var",        t.split_var.len() * 4,       t.split_var.capacity() * 4),
+        ("split_val",        t.split_val.len() * 8,       t.split_val.capacity() * 8),
+        ("leaf_val",         t.leaf_val.len() * 8,        t.leaf_val.capacity() * 8),
+        ("leaf_indices",     t.leaf_indices.len() * 4,    t.leaf_indices.capacity() * 4),
+        ("node_nvalue",      t.node_nvalue.len() * 8,     t.node_nvalue.capacity() * 8),
+        ("leaf_kind",        t.leaf_kind.len(),           t.leaf_kind.capacity()),
+        ("leaf_param_idx",   t.leaf_param_idx.len() * 8,  t.leaf_param_idx.capacity() * 8),
+        ("linear_intercept", t.linear_intercept.iter().map(|v| v.len() * 8).sum(),
+                             t.linear_intercept.iter().map(|v| v.capacity() * 8).sum()),
+        ("linear_slope",     t.linear_slope.iter().map(|v| v.len() * 8).sum(),
+                             t.linear_slope.iter().map(|v| v.capacity() * 8).sum()),
+        ("linear_var",       t.linear_var.len() * 4,      t.linear_var.capacity() * 4),
+    ]
 }
 
 #[pymodule]

@@ -14,11 +14,14 @@
 
 import math
 
+import os
 from time import perf_counter
 from typing import Optional, Tuple
 
 import numpy as np
 
+import psutil
+import psutil
 from pymc.initial_point import PointType
 from pymc.model import Model, modelcontext
 from pymc.pytensorf import inputvars
@@ -210,6 +213,7 @@ class PGBART(ArrayStepShared):
         )
 
         self.tune = True
+        self._astep_calls = 0
         super().__init__(vars, self.compiled_pymc_model.shared)
 
     def __getstate__(self):
@@ -246,6 +250,29 @@ class PGBART(ArrayStepShared):
         self.compiled_pymc_model.update_shared_arrays()
         sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
         t1 = perf_counter()
+        
+        import psutil
+        _PROC = psutil.Process()
+
+        def cur_rss_mb():
+            return _PROC.memory_info().rss / 1e6
+
+        
+        import resource, os
+        def rss_mb():
+            r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            return r / (1024*1024 if os.uname().sysname == "Darwin" else 1024)
+
+        # in astep, print RSS at the tune->post transition and at the end
+        self._astep_calls += 1
+        if self._astep_calls == self.n_tune:
+            print(f"[end of tune] cur_rss={cur_rss_mb():.1f}MB calls={self._astep_calls}", flush=True)
+        if self._astep_calls == self.n_total:
+            print(f"[end of sampling] cur_rss={cur_rss_mb():.1f}MB", flush=True)
+            self.pg_bart.report_stored_bytes()
+            
+        if self._astep_calls % 200 == 0:
+            print(f"call={self._astep_calls} cur_rss={cur_rss_mb():.1f}MB", flush=True)
 
         stats = {
             "variable_inclusion": _encode_vi(variable_inclusion),
@@ -253,6 +280,7 @@ class PGBART(ArrayStepShared):
             "time": t1 - t0,
         }
 
+        
         return sum_trees, [stats]
 
 
