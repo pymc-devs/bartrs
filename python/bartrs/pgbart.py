@@ -101,7 +101,6 @@ class PGBART(ArrayStepShared):
 
         self.shape = 1 if len(shape) == 1 else shape[0]
 
-
         # Updated later in self.setup() by pymc.sample(...)
         self.n_draws = 0
         self.n_tune = 0
@@ -203,7 +202,6 @@ class PGBART(ArrayStepShared):
         # pg = PySampler(...)
         # state = pg.init(...)
         # new_state, info = pg.step(rng, state)
-
         self.pg_bart = PySampler.init(
             x=np.asfortranarray(self.X),
             y=self.bart.Y,
@@ -212,8 +210,6 @@ class PGBART(ArrayStepShared):
         )
 
         self.tune = True
-
-        self.check = True
         super().__init__(vars, self.compiled_pymc_model.shared)
 
     def __getstate__(self):
@@ -250,10 +246,6 @@ class PGBART(ArrayStepShared):
         self.compiled_pymc_model.update_shared_arrays()
         sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
         t1 = perf_counter()
-
-        if self.check == True:
-            print(self.n_draws, self.n_tune, self.n_total)
-            self.check = False
 
         stats = {
             "variable_inclusion": _encode_vi(variable_inclusion),
