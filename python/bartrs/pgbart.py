@@ -32,7 +32,7 @@ from pytensor.graph.basic import Variable
 from pymc_bart.bart import BARTRV
 from bartrs.compile_pymc import CompiledPyMCModel
 from bartrs.bartrs import PyBartSettings, PySampler
-from pymc_bart.utils import _encode_vi
+from pymc_bart.utils import _encode_vi, _encode_obj
 
 
 class PGBART(ArrayStepShared):
@@ -58,6 +58,8 @@ class PGBART(ArrayStepShared):
     generates_stats = True
     stats_dtypes_shapes: dict[str, tuple[type, list]] = {
         "variable_inclusion": (object, []),
+        "trees": (object, []),
+        "baseline_forest": (object, []),
         "tune": (bool, []),
         "time": (float, []),
     }
@@ -104,14 +106,13 @@ class PGBART(ArrayStepShared):
 
         self.shape = 1 if len(shape) == 1 else shape[0]
 
+        self.bart.n_outputs = self.shape
+
         # Updated later in self.setup() by pymc.sample(...)
         self.n_draws = 0
         self.n_tune = 0
         self.n_total = 0
 
-        # Set trees_shape (dim for separate tree structures)
-        # and leaves_shape (dim for leaf node values)
-        # One of the two is always one, the other equal to self.shape
 
         if self.bart.split_prior.size == 0:
             self.alpha_vec = np.ones(self.X.shape[1])
@@ -248,39 +249,17 @@ class PGBART(ArrayStepShared):
     def astep(self, _):
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
-        sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
+        sum_trees, variable_inclusion, new_batch, new_baseline = self.pg_bart.step(self.tune)
         t1 = perf_counter()
-        
-        import psutil
-        _PROC = psutil.Process()
-
-        def cur_rss_mb():
-            return _PROC.memory_info().rss / 1e6
-
-        
-        import resource, os
-        def rss_mb():
-            r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            return r / (1024*1024 if os.uname().sysname == "Darwin" else 1024)
-
-        # in astep, print RSS at the tune->post transition and at the end
-        self._astep_calls += 1
-        if self._astep_calls == self.n_tune:
-            print(f"[end of tune] cur_rss={cur_rss_mb():.1f}MB calls={self._astep_calls}", flush=True)
-        if self._astep_calls == self.n_total:
-            print(f"[end of sampling] cur_rss={cur_rss_mb():.1f}MB", flush=True)
-            self.pg_bart.report_stored_bytes()
-            
-        if self._astep_calls % 200 == 0:
-            print(f"call={self._astep_calls} cur_rss={cur_rss_mb():.1f}MB", flush=True)
 
         stats = {
             "variable_inclusion": _encode_vi(variable_inclusion),
+            "trees": _encode_obj(new_batch) if new_batch is not None else None,
+            "baseline_forest": _encode_obj(new_baseline) if new_baseline is not None else None,
             "tune": self.tune,
             "time": t1 - t0,
         }
 
-        
         return sum_trees, [stats]
 
 
@@ -293,9 +272,7 @@ class PGBART(ArrayStepShared):
         return Competence.INCOMPATIBLE
 
     def setup(self, tune: int, draws: int) -> None:
-        self.n_draws = draws
-        self.n_tune = tune
-        self.n_total = draws + tune
+        self.pg_bart.reserve_draws(draws)
 
 def calculate_max_tree_depth(alpha: float, beta: float, probs_leaf: float) -> int:
     """Calculates the maximum tree depth for which the probability of a node

@@ -37,11 +37,6 @@ use rand_distr::StandardNormal;
 
 type LogpFunc = unsafe extern "C" fn(*const f64, usize) -> c_double;
 
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -129,6 +124,7 @@ struct PySampler {
     all_trees: Vec<TreeBatch>,
     baseline_forest: Option<Vec<TreeArrays>>,
     n_trees: usize,
+    n_outputs: usize,
 }
 
 #[pymethods]
@@ -231,15 +227,26 @@ impl PySampler {
             all_trees,
             baseline_forest: None,
             n_trees: settings.n_trees,
+            n_outputs: settings.n_outputs,
         })
     }
 
+    fn reserve_draws(&mut self, draws: usize) {
+        self.all_trees = Vec::with_capacity(draws);
+    }
+
     #[pyo3(signature = (tune = None))]
+    #[allow(clippy::type_complexity)]
     fn step<'py>(
         &mut self,
         py: Python<'py>,
         tune: Option<bool>,
-    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<u32>)> {
+    ) -> PyResult<(
+        Bound<'py, PyArray2<f64>>,
+        Vec<u32>,
+        Option<(usize, Vec<TreeArrays>)>,
+        Option<Vec<TreeArrays>>,
+    )> {
 
         let mut state = self
             .state
@@ -251,24 +258,30 @@ impl PySampler {
         }
         let was_tune = state.tune;
 
+        // `new_baseline` mirrors what gets stored in `self.baseline_forest`, but only on the
+        // step where it's first computed, so callers can stream it back to Python exactly once.
+        let mut new_baseline: Option<Vec<TreeArrays>> = None;
         if !was_tune && self.baseline_forest.is_none() {
             let mut forest = state.forest.clone();
             for t in &mut forest { t.leaf_indices = Vec::new(); }
-            self.baseline_forest = Some(forest);
+            self.baseline_forest = Some(forest.clone());
+            new_baseline = Some(forest);
         }
-        
+
 
         let (new_state, info) = self.kernel.step(&mut self.rng, state);
 
+        let mut new_batch: Option<(usize, Vec<TreeArrays>)> = None;
         if !was_tune {
             let mut trees = Vec::with_capacity(info.batch_size);
             for k in 0..info.batch_size {
                 let idx = (info.batch_start + k) % self.n_trees;
                 let mut t = new_state.forest[idx].clone();
-                t.leaf_indices = Vec::new();   // only the STORED copy loses it
+                t.leaf_indices = Vec::new();
                 trees.push(t);
             }
-            self.all_trees.push(TreeBatch { start: info.batch_start, trees });
+            self.all_trees.push(TreeBatch { start: info.batch_start, trees: trees.clone() });
+            new_batch = Some((info.batch_start, trees));
         }
 
 
@@ -279,78 +292,8 @@ impl PySampler {
 
         let variable_inclusion = self.state.as_ref().unwrap().get_variable_inclusion();
 
-        Ok((result, variable_inclusion))
+        Ok((result, variable_inclusion, new_batch, new_baseline))
     }
-
-    /// Diagnostic: per-field byte breakdown of everything currently retained in
-    /// `all_trees` + `baseline_forest`. Reports both `len`-based bytes (actual
-    /// data) and `capacity`-based bytes (allocated), so fixed-width buffers and
-    /// capacity slack are both visible. Call once after sampling finishes.
-    fn report_stored_bytes(&self) {
-        use std::collections::BTreeMap;
-
-        let mut len_tot: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut cap_tot: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut n_trees_counted = 0usize;
-        let mut node_count_sum = 0usize; // sum of split_var.len() across trees
-        let mut max_node_count = 0usize;
-
-        let all = self
-            .all_trees
-            .iter()
-            .flat_map(|b| b.trees.iter())
-            .chain(self.baseline_forest.iter().flatten());
-
-        for t in all {
-            n_trees_counted += 1;
-            node_count_sum += t.split_var.len();
-            max_node_count = max_node_count.max(t.split_var.len());
-            for (name, len_b, cap_b) in tree_field_report(t) {
-                *len_tot.entry(name).or_default() += len_b;
-                *cap_tot.entry(name).or_default() += cap_b;
-            }
-        }
-
-        eprintln!(
-            "--- stored tree field breakdown ({} trees, {} batches, baseline={}) ---",
-            n_trees_counted,
-            self.all_trees.len(),
-            self.baseline_forest.is_some()
-        );
-
-        let mut len_sum = 0usize;
-        let mut cap_sum = 0usize;
-        for (name, &lb) in &len_tot {
-            let cb = cap_tot[name];
-            len_sum += lb;
-            cap_sum += cb;
-            eprintln!(
-                "{:<16} len={:>9.2}MB  cap={:>9.2}MB  slack={:>8.2}MB",
-                name,
-                lb as f64 / 1e6,
-                cb as f64 / 1e6,
-                (cb - lb) as f64 / 1e6
-            );
-        }
-        eprintln!(
-            "{:<16} len={:>9.2}MB  cap={:>9.2}MB  slack={:>8.2}MB",
-            "TOTAL",
-            len_sum as f64 / 1e6,
-            cap_sum as f64 / 1e6,
-            (cap_sum - len_sum) as f64 / 1e6
-        );
-
-        if n_trees_counted > 0 {
-            eprintln!(
-                "avg per tree: len={:.0}B cap={:.0}B | avg nodes/tree={:.1} max nodes={}",
-                len_sum as f64 / n_trees_counted as f64,
-                cap_sum as f64 / n_trees_counted as f64,
-                node_count_sum as f64 / n_trees_counted as f64,
-                max_node_count
-            );
-        }
-    }
-
 
     fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>>{
 
@@ -370,83 +313,146 @@ impl PySampler {
 
 impl PySampler {
     fn _sample_posterior(&mut self, x: &Array<f64, Ix2>, samples: usize, excluded: &Vec<usize>) -> Array<f64, Ix3> {
-        let n_outputs = self.state.as_ref().expect("Sampler state is missing").predictions.nrows();
-        let n_data_samples: usize = x.nrows();
-        let n_trees = self.n_trees;
-        let n_draws = self.all_trees.len();
-
-        assert!(n_draws > 0, "No posterior draws stored yet");
-
-        let random_samples: Vec<usize> = (0..samples)
-            .map(|_| self.rng.random_range(0..n_draws as u32) as usize)
-            .collect();
-
-        let mut predictions = Array3::zeros((samples, n_outputs, n_data_samples));
-
-        for posterior_sample_idx in 0..samples {
-            let draw_idx = random_samples[posterior_sample_idx];
-            let mut sample = predictions.slice_mut(s![posterior_sample_idx, .., ..]);
-
-            let mut covered = vec![false; n_trees];
-            let mut remaining = n_trees;
-
-            // Walk backward from draw_idx, taking the most recent version of
-            // each tree slot until every slot is accounted for.
-            let mut b = draw_idx as isize;
-            while remaining > 0 && b >= 0 {
-                let batch = &self.all_trees[b as usize];
-                for (k, tree) in batch.trees.iter().enumerate() {
-                    let tree_idx = (batch.start + k) % n_trees;
-                    if !covered[tree_idx] {
-                        covered[tree_idx] = true;
-                        remaining -= 1;
-                        sample += &tree.predict_batch_test(x, excluded);
-                    }
-                }
-                b -= 1;
-            }
-
-            // Ran out of stored history before covering all slots: fill the rest
-            // from the end-of-tuning snapshot.
-            if remaining > 0 {
-                if let Some(baseline) = &self.baseline_forest {
-                    for tree_idx in 0..n_trees {
-                        if !covered[tree_idx] {
-                            sample += &baseline[tree_idx].predict_batch_test(x, excluded);
-                        }
-                    }
-                }
-            }
-        }
-
-        predictions
+        predict_from_history(
+            &self.all_trees,
+            self.baseline_forest.as_deref(),
+            self.n_trees,
+            self.n_outputs,
+            x,
+            samples,
+            excluded,
+            &mut self.rng,
+        )
     }
 
 }
 
-/// Per-field byte accounting for a single stored tree.
-/// Returns (field name, bytes from len, bytes from capacity) for each field.
-fn tree_field_report(t: &TreeArrays) -> [(&'static str, usize, usize); 10] {
-    [
-        ("split_var",        t.split_var.len() * 4,       t.split_var.capacity() * 4),
-        ("split_val",        t.split_val.len() * 8,       t.split_val.capacity() * 8),
-        ("leaf_val",         t.leaf_val.len() * 8,        t.leaf_val.capacity() * 8),
-        ("leaf_indices",     t.leaf_indices.len() * 4,    t.leaf_indices.capacity() * 4),
-        ("node_nvalue",      t.node_nvalue.len() * 8,     t.node_nvalue.capacity() * 8),
-        ("leaf_kind",        t.leaf_kind.len(),           t.leaf_kind.capacity()),
-        ("leaf_param_idx",   t.leaf_param_idx.len() * 8,  t.leaf_param_idx.capacity() * 8),
-        ("linear_intercept", t.linear_intercept.iter().map(|v| v.len() * 8).sum(),
-                             t.linear_intercept.iter().map(|v| v.capacity() * 8).sum()),
-        ("linear_slope",     t.linear_slope.iter().map(|v| v.len() * 8).sum(),
-                             t.linear_slope.iter().map(|v| v.capacity() * 8).sum()),
-        ("linear_var",       t.linear_var.len() * 4,      t.linear_var.capacity() * 4),
-    ]
+#[allow(clippy::too_many_arguments)]
+fn predict_from_history(
+    batches: &[TreeBatch],
+    baseline_forest: Option<&[TreeArrays]>,
+    n_trees: usize,
+    n_outputs: usize,
+    x: &Array<f64, Ix2>,
+    samples: usize,
+    excluded: &Vec<usize>,
+    rng: &mut SmallRng,
+) -> Array<f64, Ix3> {
+    let n_data_samples: usize = x.nrows();
+    let n_draws = batches.len();
+
+    assert!(n_draws > 0, "No posterior draws stored yet");
+
+    let random_samples: Vec<usize> = (0..samples)
+        .map(|_| rng.random_range(0..n_draws as u32) as usize)
+        .collect();
+
+    let mut predictions = Array3::zeros((samples, n_outputs, n_data_samples));
+
+    for posterior_sample_idx in 0..samples {
+        let draw_idx = random_samples[posterior_sample_idx];
+        let mut sample = predictions.slice_mut(s![posterior_sample_idx, .., ..]);
+
+        let mut covered = vec![false; n_trees];
+        let mut remaining = n_trees;
+
+        let mut b = draw_idx as isize;
+        while remaining > 0 && b >= 0 {
+            let batch = &batches[b as usize];
+            for (k, tree) in batch.trees.iter().enumerate() {
+                let tree_idx = (batch.start + k) % n_trees;
+                if !covered[tree_idx] {
+                    covered[tree_idx] = true;
+                    remaining -= 1;
+                    sample += &tree.predict_batch_test(x, excluded);
+                }
+            }
+            b -= 1;
+        }
+
+        if remaining > 0 {
+            if let Some(baseline) = baseline_forest {
+                for tree_idx in 0..n_trees {
+                    if !covered[tree_idx] {
+                        sample += &baseline[tree_idx].predict_batch_test(x, excluded);
+                    }
+                }
+            }
+        }
+    }
+
+    predictions
 }
+
+
+#[pyclass(module = "bartrs.bartrs", weakref)]
+struct PosteriorSampler {
+    batches: Vec<TreeBatch>,
+    baseline_forest: Option<Vec<TreeArrays>>,
+    n_trees: usize,
+    n_outputs: usize,
+    rng: SmallRng,
+}
+
+#[pymethods]
+impl PosteriorSampler {
+    #[staticmethod]
+    fn from_history(
+        batches: Vec<(usize, Vec<TreeArrays>)>,
+        baseline_forest: Option<Vec<TreeArrays>>,
+        n_trees: usize,
+        n_outputs: usize,
+        seed: u64,
+    ) -> Self {
+        let batches = batches
+            .into_iter()
+            .map(|(start, trees)| TreeBatch { start, trees })
+            .collect();
+        Self {
+            batches,
+            baseline_forest,
+            n_trees,
+            n_outputs,
+            rng: SmallRng::seed_from_u64(seed),
+        }
+    }
+
+    #[getter]
+    fn n_outputs(&self) -> usize {
+        self.n_outputs
+    }
+
+    fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>> {
+        let data = x.as_array().to_owned();
+
+        let excl = match excluded {
+            Some(list) => list.iter()
+                .map(|item| item.extract::<usize>())
+                .collect::<PyResult<Vec<usize>>>()?,
+            None => Vec::new(),
+        };
+
+        let preds = predict_from_history(
+            &self.batches,
+            self.baseline_forest.as_deref(),
+            self.n_trees,
+            self.n_outputs,
+            &data,
+            samples,
+            &excl,
+            &mut self.rng,
+        ).to_pyarray(py).unbind();
+
+        Ok(preds)
+    }
+}
+
 
 #[pymodule]
 fn bartrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBartSettings>()?;
     m.add_class::<PySampler>()?;
+    m.add_class::<PosteriorSampler>()?;
     m.add_class::<TreeArrays>()?;
     Ok(())
 }
