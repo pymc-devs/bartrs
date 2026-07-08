@@ -14,11 +14,14 @@
 
 import math
 
+import os
 from time import perf_counter
 from typing import Optional, Tuple
 
 import numpy as np
 
+import psutil
+import psutil
 from pymc.initial_point import PointType
 from pymc.model import Model, modelcontext
 from pymc.pytensorf import inputvars
@@ -29,7 +32,7 @@ from pytensor.graph.basic import Variable
 from pymc_bart.bart import BARTRV
 from bartrs.compile_pymc import CompiledPyMCModel
 from bartrs.bartrs import PyBartSettings, PySampler
-from pymc_bart.utils import _encode_vi
+from pymc_bart.utils import _encode_vi, _encode_obj
 
 
 class PGBART(ArrayStepShared):
@@ -55,6 +58,8 @@ class PGBART(ArrayStepShared):
     generates_stats = True
     stats_dtypes_shapes: dict[str, tuple[type, list]] = {
         "variable_inclusion": (object, []),
+        "trees": (object, []),
+        "baseline_forest": (object, []),
         "tune": (bool, []),
         "time": (float, []),
     }
@@ -101,10 +106,13 @@ class PGBART(ArrayStepShared):
 
         self.shape = 1 if len(shape) == 1 else shape[0]
 
+        self.bart.n_outputs = self.shape
 
-        # Set trees_shape (dim for separate tree structures)
-        # and leaves_shape (dim for leaf node values)
-        # One of the two is always one, the other equal to self.shape
+        # Updated later in self.setup() by pymc.sample(...)
+        self.n_draws = 0
+        self.n_tune = 0
+        self.n_total = 0
+
 
         if self.bart.split_prior.size == 0:
             self.alpha_vec = np.ones(self.X.shape[1])
@@ -165,6 +173,7 @@ class PGBART(ArrayStepShared):
             resampling_rule="systematic",
             batch_tune=batch[0],
             batch_post=batch[1],
+            n_draws=self.n_draws,
         )
 
         # child processes spawned with spawn need to be able
@@ -187,6 +196,7 @@ class PGBART(ArrayStepShared):
             "resampling_rule": "systematic",
             "batch_tune": batch[0],
             "batch_post": batch[1],
+            "n_draws": self.n_draws,
         }
 
         # INFO: Only at the end do we return the State structure back to Python to avoid
@@ -196,7 +206,6 @@ class PGBART(ArrayStepShared):
         # pg = PySampler(...)
         # state = pg.init(...)
         # new_state, info = pg.step(rng, state)
-
         self.pg_bart = PySampler.init(
             x=np.asfortranarray(self.X),
             y=self.bart.Y,
@@ -205,6 +214,7 @@ class PGBART(ArrayStepShared):
         )
 
         self.tune = True
+        self._astep_calls = 0
         super().__init__(vars, self.compiled_pymc_model.shared)
 
     def __getstate__(self):
@@ -237,18 +247,15 @@ class PGBART(ArrayStepShared):
 
 
     def astep(self, _):
-    #     # Record time to quantify performance improvements
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
-    #     sum_trees, variable_inclusion = step(self.state, self.tune)
-
-        sum_trees, trees, variable_inclusion = self.pg_bart.step(self.tune)
-        if not self.tune:
-            self.bart.all_trees.append(trees) # this doubles runtime
+        sum_trees, variable_inclusion, new_batch, new_baseline = self.pg_bart.step(self.tune)
         t1 = perf_counter()
 
         stats = {
             "variable_inclusion": _encode_vi(variable_inclusion),
+            "trees": _encode_obj(new_batch) if new_batch is not None else None,
+            "baseline_forest": _encode_obj(new_baseline) if new_baseline is not None else None,
             "tune": self.tune,
             "time": t1 - t0,
         }
@@ -264,6 +271,8 @@ class PGBART(ArrayStepShared):
             return Competence.IDEAL
         return Competence.INCOMPATIBLE
 
+    def setup(self, tune: int, draws: int) -> None:
+        self.pg_bart.reserve_draws(draws)
 
 def calculate_max_tree_depth(alpha: float, beta: float, probs_leaf: float) -> int:
     """Calculates the maximum tree depth for which the probability of a node

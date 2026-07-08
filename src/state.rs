@@ -34,4 +34,8 @@ pub struct BartInfo {
     pub log_likelihood: f64,
     pub acceptance_count: usize,
     pub tree_depths: Vec<u8>,
+    /// Index of the start of trees updated this step
+    pub batch_start: usize,
+    /// Number of trees updated per step
+    pub batch_size: usize,
 }
