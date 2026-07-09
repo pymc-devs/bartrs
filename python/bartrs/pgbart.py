@@ -106,7 +106,10 @@ class PGBART(ArrayStepShared):
 
         self.shape = 1 if len(shape) == 1 else shape[0]
 
-        self.bart.n_outputs = self.shape
+        type(self.bart).n_outputs = self.shape
+
+        self._non_tune_steps = 0
+        self._synced_all_trees = False
 
         # Updated later in self.setup() by pymc.sample(...)
         self.n_draws = 0
@@ -249,7 +252,7 @@ class PGBART(ArrayStepShared):
     def astep(self, _):
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
-        sum_trees, variable_inclusion, new_batch, new_baseline = self.pg_bart.step(self.tune)
+        sum_trees, variable_inclusion = self.pg_bart.step(self.tune)
         t1 = perf_counter()
 
         stats = {
@@ -259,6 +262,19 @@ class PGBART(ArrayStepShared):
             "tune": self.tune,
             "time": t1 - t0,
         }
+
+        if not self.tune:
+            self._non_tune_steps += 1
+
+        if (
+            not self._synced_all_trees
+            and self.n_draws > 0
+            and self._non_tune_steps == self.n_draws
+        ):
+            batches = self.pg_bart.all_batches
+            baseline = self.pg_bart.baseline_forest
+            self.bart.all_trees.append((baseline, batches))
+            self._synced_all_trees = True
 
         return sum_trees, [stats]
 
@@ -272,6 +288,7 @@ class PGBART(ArrayStepShared):
         return Competence.INCOMPATIBLE
 
     def setup(self, tune: int, draws: int) -> None:
+        self.n_draws = draws
         self.pg_bart.reserve_draws(draws)
 
 def calculate_max_tree_depth(alpha: float, beta: float, probs_leaf: float) -> int:

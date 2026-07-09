@@ -18,7 +18,7 @@ from pymc.pytensorf import (
     join_nonshared_inputs,
     make_shared_replacements,
 )
-from numba import carray, cfunc, extending, float64, types, njit
+from numba import carray, cfunc, extending, float64, types, njit, int64
 from numba.core import cgutils
 
 
