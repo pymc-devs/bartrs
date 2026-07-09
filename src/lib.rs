@@ -236,17 +236,11 @@ impl PySampler {
     }
 
     #[pyo3(signature = (tune = None))]
-    #[allow(clippy::type_complexity)]
     fn step<'py>(
         &mut self,
         py: Python<'py>,
         tune: Option<bool>,
-    ) -> PyResult<(
-        Bound<'py, PyArray2<f64>>,
-        Vec<u32>,
-        Option<(usize, Vec<TreeArrays>)>,
-        Option<Vec<TreeArrays>>,
-    )> {
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<u32>)> {
 
         let mut state = self
             .state
@@ -258,20 +252,14 @@ impl PySampler {
         }
         let was_tune = state.tune;
 
-        // `new_baseline` mirrors what gets stored in `self.baseline_forest`, but only on the
-        // step where it's first computed, so callers can stream it back to Python exactly once.
-        let mut new_baseline: Option<Vec<TreeArrays>> = None;
         if !was_tune && self.baseline_forest.is_none() {
             let mut forest = state.forest.clone();
             for t in &mut forest { t.leaf_indices = Vec::new(); }
-            self.baseline_forest = Some(forest.clone());
-            new_baseline = Some(forest);
+            self.baseline_forest = Some(forest);
         }
-
 
         let (new_state, info) = self.kernel.step(&mut self.rng, state);
 
-        let mut new_batch: Option<(usize, Vec<TreeArrays>)> = None;
         if !was_tune {
             let mut trees = Vec::with_capacity(info.batch_size);
             for k in 0..info.batch_size {
@@ -280,10 +268,8 @@ impl PySampler {
                 t.leaf_indices = Vec::new();
                 trees.push(t);
             }
-            self.all_trees.push(TreeBatch { start: info.batch_start, trees: trees.clone() });
-            new_batch = Some((info.batch_start, trees));
+            self.all_trees.push(TreeBatch { start: info.batch_start, trees });
         }
-
 
         // Return predictions as a 2-D array with shape (n_outputs, n_samples)
         let result = numpy::PyArray2::from_owned_array(py, new_state.predictions.clone());
@@ -292,10 +278,28 @@ impl PySampler {
 
         let variable_inclusion = self.state.as_ref().unwrap().get_variable_inclusion();
 
-        Ok((result, variable_inclusion, new_batch, new_baseline))
+        Ok((result, variable_inclusion))
     }
 
-    fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>>{
+    #[getter]
+    fn n_draws(&self) -> usize {
+        self.all_trees.len()
+    }
+
+    #[getter]
+    fn all_batches(&self) -> Vec<(usize, Vec<TreeArrays>)> {
+        self.all_trees
+            .iter()
+            .map(|b| (b.start, b.trees.clone()))
+            .collect()
+    }
+
+    #[getter]
+    fn baseline_forest(&self) -> Option<Vec<TreeArrays>> {
+        self.baseline_forest.clone()
+    }
+
+    fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, draw_indices: Vec<usize>, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>>{
 
         let data = x.as_array().to_owned();
 
@@ -306,22 +310,21 @@ impl PySampler {
             None => Vec::new(),
         };
 
-        let preds = self._sample_posterior(&data, samples, &excl).to_pyarray(py).unbind();
+        let preds = self._sample_posterior(&data, &draw_indices, &excl).to_pyarray(py).unbind();
         return Ok(preds)
     }
 }
 
 impl PySampler {
-    fn _sample_posterior(&mut self, x: &Array<f64, Ix2>, samples: usize, excluded: &Vec<usize>) -> Array<f64, Ix3> {
+    fn _sample_posterior(&mut self, x: &Array<f64, Ix2>, draw_indices: &[usize], excluded: &Vec<usize>) -> Array<f64, Ix3> {
         predict_from_history(
             &self.all_trees,
             self.baseline_forest.as_deref(),
             self.n_trees,
             self.n_outputs,
             x,
-            samples,
+            draw_indices,
             excluded,
-            &mut self.rng,
         )
     }
 
@@ -334,23 +337,19 @@ fn predict_from_history(
     n_trees: usize,
     n_outputs: usize,
     x: &Array<f64, Ix2>,
-    samples: usize,
+    draw_indices: &[usize],
     excluded: &Vec<usize>,
-    rng: &mut SmallRng,
 ) -> Array<f64, Ix3> {
     let n_data_samples: usize = x.nrows();
     let n_draws = batches.len();
+    let samples = draw_indices.len();
 
     assert!(n_draws > 0, "No posterior draws stored yet");
-
-    let random_samples: Vec<usize> = (0..samples)
-        .map(|_| rng.random_range(0..n_draws as u32) as usize)
-        .collect();
 
     let mut predictions = Array3::zeros((samples, n_outputs, n_data_samples));
 
     for posterior_sample_idx in 0..samples {
-        let draw_idx = random_samples[posterior_sample_idx];
+        let draw_idx = draw_indices[posterior_sample_idx];
         let mut sample = predictions.slice_mut(s![posterior_sample_idx, .., ..]);
 
         let mut covered = vec![false; n_trees];
@@ -391,7 +390,6 @@ struct PosteriorSampler {
     baseline_forest: Option<Vec<TreeArrays>>,
     n_trees: usize,
     n_outputs: usize,
-    rng: SmallRng,
 }
 
 #[pymethods]
@@ -402,7 +400,6 @@ impl PosteriorSampler {
         baseline_forest: Option<Vec<TreeArrays>>,
         n_trees: usize,
         n_outputs: usize,
-        seed: u64,
     ) -> Self {
         let batches = batches
             .into_iter()
@@ -413,7 +410,6 @@ impl PosteriorSampler {
             baseline_forest,
             n_trees,
             n_outputs,
-            rng: SmallRng::seed_from_u64(seed),
         }
     }
 
@@ -422,7 +418,12 @@ impl PosteriorSampler {
         self.n_outputs
     }
 
-    fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, samples: usize, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>> {
+    #[getter]
+    fn n_draws(&self) -> usize {
+        self.batches.len()
+    }
+
+    fn sample_posterior<'py>(&mut self, py: Python<'py>, x: PyReadonlyArray2<'py, f64>, draw_indices: Vec<usize>, excluded: Option<&Bound<'py, PyList>>) -> PyResult<Py<PyArray3<f64>>> {
         let data = x.as_array().to_owned();
 
         let excl = match excluded {
@@ -438,9 +439,8 @@ impl PosteriorSampler {
             self.n_trees,
             self.n_outputs,
             &data,
-            samples,
+            &draw_indices,
             &excl,
-            &mut self.rng,
         ).to_pyarray(py).unbind();
 
         Ok(preds)

@@ -18,7 +18,7 @@ from pymc.pytensorf import (
     join_nonshared_inputs,
     make_shared_replacements,
 )
-from numba import carray, cfunc, extending, float64, types, njit
+from numba import carray, cfunc, extending, float64, types, njit, int64
 from numba.core import cgutils
 
 
@@ -232,7 +232,6 @@ class CompiledPyMCModel:
         the compiled function interface.
         """
         arrays = [item.storage[0].copy() for item in self.logp_fn_ptr.input_storage[1:]]
-        assert all(arr.dtype == np.float64 for arr in arrays)
         return arrays
 
     # TODO: fast update for shared arrays
