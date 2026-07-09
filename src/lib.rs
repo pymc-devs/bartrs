@@ -236,6 +236,7 @@ impl PySampler {
     }
 
     #[pyo3(signature = (tune = None))]
+    #[allow(clippy::type_complexity)]
     fn step<'py>(
         &mut self,
         py: Python<'py>,

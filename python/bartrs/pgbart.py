@@ -20,6 +20,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+import psutil
+import psutil
 from pymc.initial_point import PointType
 from pymc.model import Model, modelcontext
 from pymc.pytensorf import inputvars
@@ -30,7 +32,7 @@ from pytensor.graph.basic import Variable
 from pymc_bart.bart import BARTRV
 from bartrs.compile_pymc import CompiledPyMCModel
 from bartrs.bartrs import PyBartSettings, PySampler
-from pymc_bart.utils import _encode_vi
+from pymc_bart.utils import _encode_vi, _encode_obj
 
 
 class PGBART(ArrayStepShared):
@@ -56,6 +58,8 @@ class PGBART(ArrayStepShared):
     generates_stats = True
     stats_dtypes_shapes: dict[str, tuple[type, list]] = {
         "variable_inclusion": (object, []),
+        "trees": (object, []),
+        "baseline_forest": (object, []),
         "tune": (bool, []),
         "time": (float, []),
     }
@@ -253,6 +257,8 @@ class PGBART(ArrayStepShared):
 
         stats = {
             "variable_inclusion": _encode_vi(variable_inclusion),
+            "trees": _encode_obj(new_batch) if new_batch is not None else None,
+            "baseline_forest": _encode_obj(new_baseline) if new_baseline is not None else None,
             "tune": self.tune,
             "time": t1 - t0,
         }
