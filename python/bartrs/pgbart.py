@@ -281,7 +281,8 @@ class PGBART(ArrayStepShared):
             return Competence.IDEAL
         return Competence.INCOMPATIBLE
 
-    def setup(self, tune: int, draws: int) -> None:
+    def setup_chain(self, rng: np.random.Generator, tune: int, draws: int) -> None:
+        # Maybe we use the _rng in later versions
         self.n_draws = draws
         self.pg_bart.reserve_draws(draws)
 
