@@ -232,7 +232,9 @@ impl PySampler {
     }
 
     fn reserve_draws(&mut self, draws: usize) {
-        self.all_trees = Vec::with_capacity(draws);
+        if self.all_trees.len() == 0 {
+            self.all_trees = Vec::with_capacity(draws);
+        }
     }
 
     #[pyo3(signature = (tune = None))]
