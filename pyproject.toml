@@ -21,7 +21,7 @@ readme = {file = "README.md", content-type = "text/markdown"}
 
 dependencies = [
     "numba >= 0.60.0",
-    "pymc >= 6.0.1",
+    "pymc >= 6.3.0",
     "arviz >= 1.1.0",
     "pymc_bart >= 0.12.0",
 ]
