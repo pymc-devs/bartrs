@@ -22,7 +22,7 @@ def test_bikes():
 
     with pm.Model() as model:
         alpha = pm.Exponential("alpha", 1.0)
-        mu = pmb.BART("mu", X, np.log(Y), m=NUM_TREES, response="gaussian")
+        mu = pmb.BART("mu", X, np.log(Y), m=NUM_TREES, response="constant")
         y = pm.NegativeBinomial("y", mu=pm.math.exp(mu), alpha=alpha, observed=Y)
 
         idata = pm.sample(
@@ -45,7 +45,7 @@ def test_coal():
     y_data = hist
 
     with pm.Model() as model:
-        mu = pmb.BART("mu", X=x_data, Y=np.log(y_data), m=NUM_TREES, response="gaussian")
+        mu = pmb.BART("mu", X=x_data, Y=np.log(y_data), m=NUM_TREES, response="constant")
         exp_mu = pm.Deterministic("exp_mu", pm.math.exp(mu))
         y_pred = pm.Poisson("y_pred", mu=exp_mu, observed=y_data)
 
