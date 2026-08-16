@@ -15,7 +15,7 @@
 [package]
 name = "bartrs"
 version = "0.4.0"
-edition = "2026"
+edition = "2024"
 
 [lib]
 name = "bartrs"
