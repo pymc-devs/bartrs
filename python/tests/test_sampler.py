@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pymc_bart as pmb
+from bartrs.pgbart import PGBART
 
 
 NUM_TUNE = 300
@@ -27,7 +27,7 @@ def test_bikes():
             tune=NUM_TUNE,
             draws=NUM_DRAWS,
             chains=NUM_CHAINS,
-            step=[pmb.PGBART([mu], batch=BATCH_SIZE, num_particles=NUM_PARTICLES)],
+            step=[PGBART([mu], batch=BATCH_SIZE, num_particles=NUM_PARTICLES)],
             random_seed=RANDOM_SEED,
         )
 
@@ -51,6 +51,6 @@ def test_coal():
             tune=NUM_TUNE,
             draws=NUM_DRAWS,
             chains=NUM_CHAINS,
-            step=[pmb.PGBART([mu], batch=BATCH_SIZE, num_particles=NUM_PARTICLES)],
+            step=[PGBART([mu], batch=BATCH_SIZE, num_particles=NUM_PARTICLES)],
             random_seed=RANDOM_SEED,
         )
