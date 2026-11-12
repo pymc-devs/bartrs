@@ -196,21 +196,11 @@ mod tests {
         assert_eq!(out.len(), WEIGHTS.len());
     }
 
+    
+    // Shape and bounds
     #[test]
-    fn test_systematic_resample() {
-        let mut weights = &[0.0, 0.25, 0.75];
-        let mut rng = rand::rng();
-        let mut out = Vec::new();
-
-        ResamplingStrategies::Systematic(SystematicResampling)
-            .resample_into(&mut rng, weights, &mut out);
-        assert!(out.iter().all(|&index| index >= 1 && index < weights.len()));
-
-        weights = &[0.5, 0.3, 0.2];
-        out = Vec::new();
-        ResamplingStrategies::Systematic(SystematicResampling)
-            .resample_into(&mut rng, weights, &mut out);
-        assert!(out.iter().all(|&index| index < weights.len()));
+    fn test_systematic_shape_and_bounds() {
+        assert_shape_and_bounds(ResamplingStrategies::Systematic(SystematicResampling), 3);
     }
 
     #[test]
@@ -223,6 +213,13 @@ mod tests {
         assert_shape_and_bounds(ResamplingStrategies::Stratified(StratifiedResampling), 23);
     }
 
+    
+    // Degenerate weights
+    #[test]
+    fn test_systematic_degenerate_weights() {
+        assert_degenerate_weights(ResamplingStrategies::Systematic(SystematicResampling), 29);
+    }
+    
     #[test]
     fn test_multinomial_degenerate_weights() {
         assert_degenerate_weights(ResamplingStrategies::Multinomial(MultinomialResampling), 29);
@@ -233,16 +230,30 @@ mod tests {
         assert_degenerate_weights(ResamplingStrategies::Stratified(StratifiedResampling), 31);
     }
 
+
+    // Buffer reuse
+    #[test]
+    fn test_systematic_reuses_output_buffer() {
+        assert_reuses_output_buffer(ResamplingStrategies::Systematic(SystematicResampling), 32);
+    }
+    
     #[test]
     fn test_multinomial_reuses_output_buffer() {
         assert_reuses_output_buffer(ResamplingStrategies::Multinomial(MultinomialResampling), 37);
     }
-
+    
     #[test]
     fn test_stratified_reuses_output_buffer() {
         assert_reuses_output_buffer(ResamplingStrategies::Stratified(StratifiedResampling), 39);
     }
 
+
+    // Count frequencies
+    #[test]
+    fn test_systematic_seeded_frequencies() {
+        assert_seeded_frequencies(ResamplingStrategies::Systematic(SystematicResampling), 40);
+    }
+    
     #[test]
     fn test_multinomial_seeded_frequencies() {
         assert_seeded_frequencies(ResamplingStrategies::Multinomial(MultinomialResampling), 41);
