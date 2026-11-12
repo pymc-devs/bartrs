@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 from bartrs.pgbart import PGBART
+import pymc_bart as pmb
 
 
 NUM_TUNE = 300
